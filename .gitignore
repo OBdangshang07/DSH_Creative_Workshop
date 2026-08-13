@@ -4,6 +4,7 @@ Thumbs.db
 .vscode/
 node_modules/
 dist/
+lib/
 coverage/
 *.log
 .env

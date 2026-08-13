@@ -52,7 +52,7 @@ class ApiClient {
       const res = await fetch(`${this.cloudBaseUrl}/v1/plugins?${params.toString()}`);
       if (res.ok) {
         const json = await res.json();
-        return json.data || json;
+        return json.items || json.data || json;
       }
     } catch (e) {
       // 网络异常时走 Mock 降级
@@ -69,7 +69,8 @@ class ApiClient {
     try {
       const res = await fetch(`${this.cloudBaseUrl}/v1/plugins/${pluginId}`);
       if (res.ok) {
-        return await res.json();
+        const json = await res.json();
+        return json.plugin || json;
       }
     } catch (e) {
       // 降级
