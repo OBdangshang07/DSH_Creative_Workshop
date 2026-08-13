@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <!-- Background Card: Pure Deep Obsidian -->
+  <rect width="512" height="512" rx="112" fill="#0A0E15"/>
+  <rect width="510" height="510" x="1" y="1" rx="111" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="2"/>
+
+  <!-- Constructivist Graphic: Isometric Tri-Plane Matrix (Pure Solid White) -->
+  <!-- Top Isometric Rhombus (Agent Plane) -->
+  <polygon points="256,120 376,188 256,256 136,188" fill="#FFFFFF"/>
+
+  <!-- Left Isometric Facet (Host Plane) with negative space gap -->
+  <polygon points="126,206 246,274 246,396 126,328" fill="#FFFFFF"/>
+
+  <!-- Right Isometric Facet (Client Plane) with negative space gap -->
+  <polygon points="266,274 386,206 386,328 266,396" fill="#FFFFFF"/>
+
+  <!-- Precision Cutout Alignment Slots (Constructivist Negative Space) -->
+  <polygon points="256,170 316,204 256,238 196,204" fill="#0A0E15"/>
+</svg>
