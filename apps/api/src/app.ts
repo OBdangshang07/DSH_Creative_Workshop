@@ -172,7 +172,13 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       (q === undefined || `${item.name} ${item.author} ${item.description} ${item.topics.join(' ')}`.toLowerCase().includes(q)) &&
       (kind === undefined || kind === 'all' || item.kind === kind),
     ).sort((left, right) => Number(right.moderation.featured) - Number(left.moderation.featured) || right.stars - left.stars)
-    return { source: 'https://github.com/topics/dsh-plugin', securityNotice: 'GitHub Topic 收录不代表官方认证或安全审计。', ...snapshot, items }
+    return {
+      source: 'https://github.com/topics/dsh-plugin',
+      verificationNotice: '仅展示已验证包含 dsh.bundle.patch 且引用的 Cordis patch 存在并可解析的 DeepSeek Harness Bundle。',
+      securityNotice: '结构验证不代表 DeepSeek 官方认证或安全审计，安装前仍需检查源码与权限。',
+      ...snapshot,
+      items,
+    }
   })
 
   app.get('/v1/auth/me', async request => {
@@ -348,7 +354,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     try {
       const plugins = await fetchGitHubTopic(options.githubToken)
       await accounts.replaceGitHubPlugins(admin.id, plugins)
-      return { ok: true, count: plugins.length, syncedAt: new Date().toISOString() }
+      return { ok: true, count: plugins.length, verifiedCount: plugins.length, syncedAt: new Date().toISOString() }
     } catch (cause) {
       return reply.code(502).send(error('GITHUB_SYNC_FAILED', 'GitHub Topic 同步失败', { reason: cause instanceof Error ? cause.message : 'unknown' }))
     }

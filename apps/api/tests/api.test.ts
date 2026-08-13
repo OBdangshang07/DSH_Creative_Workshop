@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApi } from '../src/app.ts'
+import { AccountStore, type GitHubPluginRecord } from '../src/auth-store.ts'
 
 describe('marketplace API', () => {
   let app: FastifyInstance
@@ -65,12 +66,11 @@ describe('marketplace API', () => {
     expect(read.json().items).toHaveLength(3)
   })
 
-  it('serves the screened GitHub Topic catalog with a safety notice', async () => {
+  it('does not expose unverified Topic projects as plugins', async () => {
     const response = await app.inject({ method: 'GET', url: '/v1/github-plugins' })
     expect(response.statusCode).toBe(200)
-    expect(response.json().items.length).toBeGreaterThanOrEqual(10)
-    expect(response.json().items[0].source).toBe('github-topic')
-    expect(response.json().securityNotice).toContain('安全审计')
+    expect(response.json().items).toEqual([])
+    expect(response.json().verificationNotice).toContain('dsh.bundle.patch')
   })
 })
 
@@ -78,9 +78,21 @@ describe('account and administration API', () => {
   let app: FastifyInstance
 
   beforeAll(async () => {
+    const accounts = new AccountStore()
+    const verifiedPlugin: GitHubPluginRecord = {
+      id: 'github.verified.bundle', fullName: 'community/verified-bundle', name: '@community/verified-bundle',
+      packageName: '@community/verified-bundle', author: 'community', description: 'A verified DSH bundle fixture.',
+      url: 'https://github.com/community/verified-bundle', stars: 1, forks: 0, updatedAt: '2026-08-14T00:00:00Z',
+      pushedAt: '2026-08-14T00:00:00Z', topics: ['dsh-plugin'], kind: 'bundle', surfaces: ['headless'],
+      source: 'github-topic', securityReviewed: false,
+      verification: { status: 'verified_bundle', commitSha: 'abc123', packageJsonPath: 'package.json', patchPath: 'cordis.patch.yml', checkedAt: '2026-08-14T00:00:00Z' },
+    }
+    await accounts.initialize(undefined, [verifiedPlugin])
+    await accounts.moderatePlugin('system', verifiedPlugin.id, { status: 'approved' })
     app = await buildApi({
       allowedOrigins: ['https://workshop.example'],
       bootstrapAdmin: { username: 'admin', email: 'admin@example.test', password: 'AdminPassword12345' },
+      accountStore: accounts,
     })
   })
 
@@ -99,7 +111,7 @@ describe('account and administration API', () => {
     const me = await app.inject({ method: 'GET', url: '/v1/auth/me', headers: { cookie } })
     expect(me.json().user.username).toBe('normal-user')
 
-    const pluginId = (await app.inject({ method: 'GET', url: '/v1/github-plugins' })).json().items[0].id as string
+    const pluginId = 'github.verified.bundle'
     const subscribed = await app.inject({
       method: 'POST', url: `/v1/me/subscriptions/${encodeURIComponent(pluginId)}/toggle`,
       headers: { cookie, origin: 'https://workshop.example' },

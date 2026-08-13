@@ -24,6 +24,7 @@ function installStyles() {
     .dsh-api-badge{cursor:default;color:#a4d007}.dsh-api-badge.offline{color:#f59e0b}
     .dsh-source-banner{margin:0 0 12px;padding:9px 12px;background:rgba(102,192,244,.08);border:1px solid rgba(102,192,244,.24);color:#8f98a0;font-size:11px;border-radius:3px}
     .dsh-source-banner a{color:#66c0f4}.dsh-github-meta{font-size:10px;color:#8f98a0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.dsh-github-meta strong{color:#f5c542}
+    .dsh-empty-catalog{grid-column:1/-1;padding:28px 18px;border:1px solid rgba(102,192,244,.24);background:rgba(15,27,39,.92);color:#c7d5e0;text-align:center}
     .dsh-dialog{position:fixed;inset:0;z-index:500;background:rgba(0,0,0,.82);display:none;align-items:center;justify-content:center;padding:20px}.dsh-dialog.open{display:flex}
     .dsh-panel{width:min(920px,96vw);max-height:88vh;overflow:auto;background:#121a24;border:1px solid #2a475e;border-radius:5px;box-shadow:0 24px 70px #000;padding:20px;color:#c7d5e0}
     .dsh-panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}.dsh-panel h2{color:#fff;font-size:18px}.dsh-close{border:0;background:transparent;color:#8f98a0;font-size:24px;cursor:pointer}
@@ -160,7 +161,7 @@ function userTable(users) {
 }
 
 function pluginTable(plugins) {
-  return `<table class="dsh-table"><thead><tr><th>项目</th><th>Stars</th><th>审核</th><th>精选</th><th>操作</th></tr></thead><tbody>${plugins.map(plugin => `<tr><td><a href="${plugin.url}" target="_blank" rel="noopener">${escapeHtml(plugin.fullName)}</a></td><td>${plugin.stars}</td><td>${plugin.moderation.status}</td><td>${plugin.moderation.featured ? '是' : '否'}</td><td><button class="dsh-button" data-plugin-action="status" data-id="${plugin.id}" data-value="${plugin.moderation.status === 'approved' ? 'hidden' : 'approved'}">${plugin.moderation.status === 'approved' ? '隐藏' : '展示'}</button><button class="dsh-button" data-plugin-action="featured" data-id="${plugin.id}" data-value="${!plugin.moderation.featured}">切换精选</button></td></tr>`).join('')}</tbody></table>`;
+  return `<table class="dsh-table"><thead><tr><th>项目</th><th>Bundle 证据</th><th>Stars</th><th>审核</th><th>操作</th></tr></thead><tbody>${plugins.map(plugin => `<tr><td><a href="${plugin.url}" target="_blank" rel="noopener">${escapeHtml(plugin.fullName)}</a></td><td>${escapeHtml(plugin.verification?.packageJsonPath)} → ${escapeHtml(plugin.verification?.patchPath)}<br><small>${escapeHtml(plugin.verification?.commitSha?.slice(0, 12))}</small></td><td>${plugin.stars}</td><td>${plugin.moderation.status}</td><td><button class="dsh-button" data-plugin-action="status" data-id="${plugin.id}" data-value="${plugin.moderation.status === 'approved' ? 'hidden' : 'approved'}">${plugin.moderation.status === 'approved' ? '隐藏' : '展示'}</button><button class="dsh-button" data-plugin-action="featured" data-id="${plugin.id}" data-value="${!plugin.moderation.featured}">切换精选</button></td></tr>`).join('')}</tbody></table>`;
 }
 
 async function syncGithub(event) {
@@ -168,7 +169,7 @@ async function syncGithub(event) {
   const message = document.getElementById('dshAdminMessage');
   try {
     const result = await api('/admin/github-sync', { method: 'POST' });
-    message.textContent = ` 已同步 ${result.count} 个合适项目`;
+    message.textContent = ` 已验证 ${result.verifiedCount} 个 DeepSeek Harness Bundle；新发现默认等待人工审核`;
     await loadCatalog();
     await showAdmin();
   } catch (error) { message.textContent = ` ${error.message}`; event.currentTarget.disabled = false; }
@@ -189,11 +190,22 @@ async function adminPluginAction(event) {
 }
 
 function hydrateCards() {
-  if (!catalog.length || observerBusy) return;
+  if (observerBusy) return;
   observerBusy = true;
   const cards = [...document.querySelectorAll('#steamAppMain .steam-card')];
+  if (!catalog.length) {
+    cards.forEach(card => { card.hidden = true; delete card.dataset.githubPlugin; delete card.dataset.githubUrl; });
+    const grid = document.querySelector('#steamAppMain .steam-card-grid');
+    if (grid && !grid.querySelector('.dsh-empty-catalog')) grid.insertAdjacentHTML('afterbegin', '<div class="dsh-empty-catalog">当前没有同时通过 DSH Bundle 结构验证和管理员审核的插件，未验证项目不会展示。</div>');
+    ensureSourceBanner();
+    observerBusy = false;
+    return;
+  }
+  document.querySelectorAll('.dsh-empty-catalog').forEach(node => node.remove());
   cards.forEach((card, index) => {
-    const plugin = catalog[index % catalog.length];
+    if (index >= catalog.length) { card.hidden = true; delete card.dataset.githubPlugin; delete card.dataset.githubUrl; return; }
+    card.hidden = false;
+    const plugin = catalog[index];
     card.dataset.githubPlugin = plugin.id;
     card.dataset.githubUrl = plugin.url;
     const title = card.querySelector('.steam-card-title');
@@ -222,11 +234,15 @@ function hydrateCards() {
     const metaHtml = `<strong>★ ${plugin.stars.toLocaleString()}</strong> · ${escapeHtml(plugin.language || 'Other')} · GitHub`;
     if (meta.innerHTML !== metaHtml) meta.innerHTML = metaHtml;
   });
-  if (!document.querySelector('.dsh-source-banner')) {
-    document.getElementById('steamAppMain')?.insertAdjacentHTML('afterbegin', '<div class="dsh-source-banner">当前项目来自 <a href="https://github.com/topics/dsh-plugin" target="_blank" rel="noopener">GitHub dsh-plugin Topic</a>；按活跃度与元数据完整度筛选。收录不代表官方认证或安全审计，安装前请检查源码与权限。</div>');
-  }
+  ensureSourceBanner();
   updateAccountButton();
   observerBusy = false;
+}
+
+function ensureSourceBanner() {
+  if (!document.querySelector('.dsh-source-banner')) {
+    document.getElementById('steamAppMain')?.insertAdjacentHTML('afterbegin', '<div class="dsh-source-banner">仅展示经固定 commit 核验，确认存在 <code>package.json → dsh.bundle.patch → Cordis patch</code> 的 DeepSeek Harness Bundle。GitHub Topic 只用于发现候选；结构验证不代表官方认证或安全审计。</div>');
+  }
 }
 
 function wireCards() {
@@ -269,6 +285,9 @@ async function init() {
   installStyles();
   buildAccountUi();
   wireCards();
+  // The HTML cards are layout skeletons, not catalog data. Keep them hidden
+  // until the API returns structurally verified and moderated DSH bundles.
+  hydrateCards();
   try {
     const [catalogResult, authResult] = await Promise.all([api('/github-plugins'), api('/auth/me')]);
     catalog = catalogResult.items;
