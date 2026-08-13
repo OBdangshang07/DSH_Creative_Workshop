@@ -1,0 +1,94 @@
+{
+  "schemaVersion": "0.1",
+  "identity": {
+    "slug": "example-workspace-tool",
+    "kind": "bundle",
+    "packageName": "@example/dsh-workspace-tool",
+    "source": {
+      "repository": "https://github.com/example/dsh-workspace-tool",
+      "homepage": "https://github.com/example/dsh-workspace-tool#readme",
+      "issues": "https://github.com/example/dsh-workspace-tool/issues"
+    }
+  },
+  "summary": {
+    "short": "Adds a read-only workspace inspection tool to DSH.",
+    "useCases": ["Inspect workspace metadata", "List project roots"],
+    "audience": ["developer", "beginner"]
+  },
+  "tags": [
+    "function/workspace",
+    "plane/agent",
+    "permission/filesystem-read",
+    "maturity/experimental"
+  ],
+  "install": {
+    "targets": ["profile"],
+    "recommendedProfiles": ["web", "headless"],
+    "activation": "process-restart",
+    "dataPaths": []
+  },
+  "compatibility": {
+    "dsh": ">=0.1.0-rc.5 <0.2.0",
+    "verifiedDshCommits": ["47f943859bef60e4160492346772ded9b24f765a"],
+    "node": "^22.19.0 || >=24.0.0",
+    "os": ["windows", "linux", "macos"],
+    "arch": ["x64", "arm64"],
+    "surfaces": ["web", "headless"]
+  },
+  "permissions": {
+    "filesystem": {
+      "required": true,
+      "items": ["workspace:read"],
+      "reason": "Reads directory metadata selected by the user."
+    },
+    "process": { "required": false, "items": [] },
+    "network": { "required": false, "items": [] },
+    "credentials": { "required": false, "items": [] },
+    "modelContext": {
+      "required": true,
+      "items": ["tool-schema:workspace_inspect"],
+      "reason": "Registers one model-facing tool schema."
+    },
+    "telemetry": { "required": false, "items": [] },
+    "lifecycleScripts": { "required": false, "items": [] }
+  },
+  "capabilities": {
+    "planes": ["agent"],
+    "providesServices": [],
+    "injectsServices": ["tools", "fs"],
+    "registersSlots": [],
+    "registersRoutes": [],
+    "settingsNamespaces": []
+  },
+  "relations": [],
+  "previews": [
+    {
+      "type": "image",
+      "url": "https://raw.githubusercontent.com/example/dsh-workspace-tool/main/docs/preview.png",
+      "alt": "The workspace inspection tool result in a DSH conversation.",
+      "license": "MIT"
+    }
+  ],
+  "verification": {
+    "smokeTests": [
+      {
+        "id": "entry-active",
+        "kind": "loader-active",
+        "target": "example-workspace-tool",
+        "timeoutSeconds": 30
+      },
+      {
+        "id": "tool-present",
+        "kind": "tool-present",
+        "target": "workspace_inspect",
+        "timeoutSeconds": 30
+      }
+    ]
+  },
+  "support": {
+    "license": "MIT",
+    "securityPolicy": "https://github.com/example/dsh-workspace-tool/security/policy",
+    "documentation": "https://github.com/example/dsh-workspace-tool#readme",
+    "languages": ["en", "zh-CN"]
+  }
+}

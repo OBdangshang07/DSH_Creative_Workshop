@@ -1,0 +1,182 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dsh-workshop.example/spec/workshop-manifest.schema.json",
+  "title": "DSH Creative Workshop Manifest",
+  "description": "Optional marketplace metadata. It supplements, but never replaces, package.json dsh declarations and the bundle patch.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "identity", "summary", "compatibility", "permissions", "support"],
+  "properties": {
+    "schemaVersion": { "const": "0.1" },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "kind", "packageName", "source"],
+      "properties": {
+        "slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+        "kind": {
+          "enum": ["bundle", "cordis-plugin", "skill-pack", "mcp-bundle", "integration", "collection", "ecosystem-tool"]
+        },
+        "packageName": { "type": "string", "minLength": 1 },
+        "packageSubdir": { "type": "string" },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["repository"],
+          "properties": {
+            "repository": { "type": "string", "format": "uri" },
+            "homepage": { "type": "string", "format": "uri" },
+            "issues": { "type": "string", "format": "uri" }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["short", "useCases", "audience"],
+      "properties": {
+        "short": { "type": "string", "minLength": 1, "maxLength": 180 },
+        "useCases": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "maxItems": 12 },
+        "audience": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9-]*/[a-z0-9][a-z0-9-]*$" },
+      "uniqueItems": true
+    },
+    "install": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "targets": {
+          "type": "array",
+          "items": { "enum": ["profile", "agent-preset", "dependency-only", "external"] },
+          "uniqueItems": true
+        },
+        "recommendedProfiles": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "activation": { "enum": ["hot-config", "page-refresh", "process-restart", "new-session", "manual"] },
+        "dataPaths": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["dsh"],
+      "properties": {
+        "dsh": { "type": "string", "minLength": 1 },
+        "verifiedDshCommits": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[0-9a-f]{7,40}$" },
+          "uniqueItems": true
+        },
+        "node": { "type": "string" },
+        "os": {
+          "type": "array",
+          "items": { "enum": ["windows", "linux", "macos"] },
+          "uniqueItems": true
+        },
+        "arch": { "type": "array", "items": { "enum": ["x64", "arm64"] }, "uniqueItems": true },
+        "surfaces": { "type": "array", "items": { "enum": ["web", "headless", "tui", "desktop"] }, "uniqueItems": true }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filesystem", "process", "network", "credentials", "modelContext", "telemetry", "lifecycleScripts"],
+      "properties": {
+        "filesystem": { "$ref": "#/$defs/accessList" },
+        "process": { "$ref": "#/$defs/accessList" },
+        "network": { "$ref": "#/$defs/accessList" },
+        "credentials": { "$ref": "#/$defs/accessList" },
+        "modelContext": { "$ref": "#/$defs/accessList" },
+        "telemetry": { "$ref": "#/$defs/accessList" },
+        "lifecycleScripts": { "$ref": "#/$defs/accessList" }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "planes": { "type": "array", "items": { "enum": ["host", "agent", "client", "external"] }, "uniqueItems": true },
+        "providesServices": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "injectsServices": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "registersSlots": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "registersRoutes": { "type": "array", "items": { "type": "string", "pattern": "^/" }, "uniqueItems": true },
+        "settingsNamespaces": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "target"],
+        "properties": {
+          "kind": { "enum": ["requires", "optional", "conflicts", "replaces", "extends"] },
+          "target": { "type": "string", "minLength": 1 },
+          "range": { "type": "string" },
+          "reason": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "previews": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "url", "alt"],
+        "properties": {
+          "type": { "enum": ["image", "video"] },
+          "url": { "type": "string", "format": "uri" },
+          "alt": { "type": "string", "minLength": 1, "maxLength": 300 },
+          "license": { "type": "string" }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "smokeTests": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind", "timeoutSeconds"],
+            "properties": {
+              "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+              "kind": { "enum": ["loader-active", "tool-present", "client-entry-present", "http-health", "manual"] },
+              "target": { "type": "string" },
+              "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 300 }
+            }
+          }
+        }
+      }
+    },
+    "support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["license", "securityPolicy"],
+      "properties": {
+        "license": { "type": "string", "minLength": 1 },
+        "securityPolicy": { "type": "string", "format": "uri" },
+        "documentation": { "type": "string", "format": "uri" },
+        "languages": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    }
+  },
+  "$defs": {
+    "accessList": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "items"],
+      "properties": {
+        "required": { "type": "boolean" },
+        "items": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+        "reason": { "type": "string", "maxLength": 500 }
+      }
+    }
+  }
+}
