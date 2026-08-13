@@ -83,7 +83,7 @@ export async function fetchGitHubTopic(token?: string): Promise<GitHubPluginReco
       'X-GitHub-Api-Version': '2022-11-28',
       ...(token === undefined ? {} : { Authorization: `Bearer ${token}` }),
     },
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(30_000),
   })
   if (!response.ok) throw new Error(`GITHUB_SYNC_FAILED_${response.status}`)
   const body = await response.json() as { items?: GitHubRepository[] }
