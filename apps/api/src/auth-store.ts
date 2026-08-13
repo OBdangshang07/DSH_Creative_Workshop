@@ -8,6 +8,7 @@ const scrypt = promisify(scryptCallback)
 export type UserRole = 'user' | 'admin'
 export type UserStatus = 'active' | 'disabled'
 export type ModerationStatus = 'approved' | 'pending' | 'hidden'
+export type PluginVerificationStatus = 'verified_bundle'
 
 export interface StoredUser {
   id: string
@@ -53,6 +54,7 @@ export interface GitHubPluginRecord {
   id: string
   fullName: string
   name: string
+  packageName?: string
   author: string
   description: string
   url: string
@@ -68,6 +70,15 @@ export interface GitHubPluginRecord {
   surfaces: string[]
   source: 'github-topic'
   securityReviewed: false
+  verification: PluginVerification
+}
+
+export interface PluginVerification {
+  status: PluginVerificationStatus
+  commitSha: string
+  packageJsonPath: string
+  patchPath: string
+  checkedAt: string
 }
 
 interface PluginModeration {
@@ -163,13 +174,14 @@ export class AccountStore {
     this.pruneSessions()
     this.data.collections ??= []
     this.data.githubReviews ??= []
+    this.data.githubPlugins = this.data.githubPlugins.filter(plugin => plugin.verification?.status === 'verified_bundle')
     for (const user of this.data.users) user.subscriptions ??= []
     if (this.data.githubPlugins.length === 0 && seedPlugins.length > 0) {
       this.data.githubPlugins = seedPlugins
       this.data.githubSyncedAt = new Date().toISOString()
       for (const plugin of seedPlugins) {
         this.data.pluginModeration[plugin.id] = {
-          status: 'approved', featured: plugin.stars >= 100, updatedAt: new Date().toISOString(), updatedBy: 'system',
+          status: 'pending', featured: false, updatedAt: new Date().toISOString(), updatedBy: 'system',
         }
       }
     }
@@ -347,20 +359,22 @@ export class AccountStore {
       const moderation = this.data.pluginModeration[plugin.id] ?? {
         status: 'pending' as const, featured: false, updatedAt: plugin.updatedAt, updatedBy: 'system',
       }
-      return admin || moderation.status === 'approved' ? [{ ...plugin, moderation }] : []
+      const structurallyVerified = plugin.verification?.status === 'verified_bundle'
+      return structurallyVerified && (admin || moderation.status === 'approved') ? [{ ...plugin, moderation }] : []
     })
     return { ...(this.data.githubSyncedAt === undefined ? {} : { syncedAt: this.data.githubSyncedAt }), items }
   }
 
   async replaceGitHubPlugins(actorId: string, plugins: GitHubPluginRecord[]): Promise<void> {
-    this.data.githubPlugins = plugins
+    const verifiedPlugins = plugins.filter(plugin => plugin.verification?.status === 'verified_bundle')
+    this.data.githubPlugins = verifiedPlugins
     this.data.githubSyncedAt = new Date().toISOString()
-    for (const plugin of plugins) {
+    for (const plugin of verifiedPlugins) {
       this.data.pluginModeration[plugin.id] ??= {
-        status: 'approved', featured: plugin.stars >= 100, updatedAt: new Date().toISOString(), updatedBy: actorId,
+        status: 'pending', featured: false, updatedAt: new Date().toISOString(), updatedBy: actorId,
       }
     }
-    this.audit(actorId, 'github.sync', `${plugins.length} plugins`)
+    this.audit(actorId, 'github.sync', `${verifiedPlugins.length} verified bundles`)
     await this.persist()
   }
 
@@ -381,7 +395,7 @@ export class AccountStore {
   }
 
   summary() {
-    const approved = Object.values(this.data.pluginModeration).filter(item => item.status === 'approved').length
+    const approved = this.githubSnapshot(false).items.length
     return {
       users: this.data.users.length,
       activeUsers: this.data.users.filter(user => user.status === 'active').length,

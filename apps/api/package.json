@@ -13,6 +13,7 @@
     "@dsh-workshop/catalog": "workspace:*",
     "@dsh-workshop/domain": "workspace:*",
     "@fastify/cors": "^11.2.0",
-    "fastify": "^5.6.2"
+    "fastify": "^5.6.2",
+    "yaml": "^2.8.2"
   }
 }
