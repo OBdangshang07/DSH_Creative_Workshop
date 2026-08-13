@@ -31,8 +31,6 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 RestrictNamespaces=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-IPAddressDeny=any
-IPAddressAllow=localhost
 MemoryMax=256M
 TasksMax=64
 
