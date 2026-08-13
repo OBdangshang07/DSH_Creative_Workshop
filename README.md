@@ -1,8 +1,52 @@
 # DSH Creative Workshop
 
-面向 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 插件生态的“创意工坊”式发现、评估、组合与安装平台规划。
+面向 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 插件生态的“创意工坊”式发现、评估、组合与安装平台。
 
-> 当前阶段只做 UI 设计以外的产品与工程搭建规划，不包含页面布局、视觉风格、组件稿或前端实现。
+> 当前仓库包含一个可离线运行、可验证的 MVP：目录控制平面、本机 Companion 和简易浏览器前端。示例插件是固定测试数据，不代表真实发布或安全背书。
+
+## 可运行 MVP
+
+当前实现包括：
+
+- 规范化插件、不可变版本、权限、兼容性、证据、关系、合集和版本评价领域模型；
+- JSON Schema 清单校验器；
+- 复合文本/标签/OS/Surface/风险检索及可解释排序；
+- 插件—依赖—Service—Slot—Route 关系投影；
+- 固定版本和顺序的合集解析；
+- 安装回执加权、Wilson 置信下界和版本绑定评价 API；
+- 仅监听 loopback 的 Companion：环境探测、受控计划、确认令牌、幂等 dry-run 操作和本机回执；
+- React/Vite 简易前端：目录、筛选、详情、权限、评价、关系图、合集和安装计划。
+
+Companion **不会接受任意 argv、命令、脚本或路径**。当前公开执行器有意固定为 `dry-run`，不会改动现有 `$DSH_HOME`；真实 `dsh plugin` 事务、快照和回滚仍属于后续阶段。
+
+## 本地运行
+
+要求 Node.js 22.19+ 和 Corepack：
+
+```powershell
+corepack pnpm install
+corepack pnpm check
+corepack pnpm dev
+```
+
+默认地址：
+
+- Web：`http://127.0.0.1:5173`
+- Marketplace API：`http://127.0.0.1:4100`
+- Local Companion：`http://127.0.0.1:4101`
+
+启动 Companion 时会在终端打印随机 `Local token`。将它填入插件详情的安装计划区域即可。token 只保存在浏览器 `sessionStorage`；也可以在开发环境设置 `WORKSHOP_COMPANION_TOKEN` 使用固定值。
+
+单独运行：
+
+```powershell
+corepack pnpm dev:api
+corepack pnpm dev:companion
+corepack pnpm dev:web
+corepack pnpm validate:manifest
+```
+
+完整实现说明见[当前 MVP 实现](docs/11-implementation.md)。
 
 ## 当前结论
 
@@ -30,6 +74,7 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 | [API 与事件草案](docs/08-api-events.md) | REST/Command API、状态机、幂等与事件契约 |
 | [实施路线图](docs/09-roadmap.md) | 分阶段交付、验收条件、测试策略和风险 |
 | [决策记录](docs/10-decisions.md) | 已确定的架构选择与明确暂缓事项 |
+| [当前 MVP 实现](docs/11-implementation.md) | 代码结构、运行方式、安全边界与后续缺口 |
 | [插件清单规范](spec/workshop-manifest.schema.json) | 工坊扩展元数据 JSON Schema（draft v0.1） |
 | [插件清单示例](examples/workshop-manifest.example.json) | 可复制的标准化元数据示例 |
 
@@ -61,11 +106,11 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 - 不重新定义 DSH 插件格式，也不恢复已被上游删除的 `.dsh-plugin` repository 协议。
 - 不让云端网站直接读写 `$DSH_HOME` 或执行 pnpm。
 - 不把 GitHub star、下载量或一次静态扫描包装成“安全认证”。
-- 不在当前阶段设计 UI。
+- 不复刻 Valve/Steam 的视觉资产或商标；当前网页只提供用于验证业务闭环的简易界面。
 
 ## 项目状态
 
-`Planning / Architecture Baseline`。后续实现应先通过本仓库中的架构与规范评审，再进入 UI 信息架构和代码搭建。
+`Runnable MVP / Dry-run Companion`。目录、检索、图、合集、评价、计划和简易前端已可运行；真实 DSH 写入事务仍未启用。
 
 本项目是独立的社区规划项目，与 DeepSeek 官方无隶属或背书关系；“STEAM 创意工坊”仅描述产品交互范式，项目不使用 Valve/Steam 的商标、素材或页面设计。
 
