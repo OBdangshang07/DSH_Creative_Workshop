@@ -687,6 +687,8 @@ EmptyState、ErrorLine、SkeletonCard、FocusRing、CommandCopy
 
 ---
 
+视觉与品牌核在抓取官方站后已修订，见 [12](12-official-ui-alignment-plan.md)。下一张设计稿顺序以 12 §9 为准（先官方对照板，再卡片/检查器）。
+
 ## 17. 建议的下一张设计稿顺序
 
 1. PluginCard + PrimaryInstallButton 全态

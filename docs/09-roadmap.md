@@ -120,7 +120,7 @@
 - 风险确认升级规则；
 - collection release 模型。
 
-后续 UI 工作按该文档第 14 节：结构终稿 → 中保真六页 → 高保真与组件库 → 静态数据可点原型。原型不接 `dsh plugin`，也不阻塞 Phase 1–5 的工程工作。
+后续 UI 工作按 [11](11-ui-design-plan.md) 第 14 节，并插入 [12](12-official-ui-alignment-plan.md) 的对齐闸门：官方对照板 → 社区插件目录/挂载/四模式预设/档案层叠板 → 检查器与 Seam 图 → 高保真 → 静态原型。原型不接 `dsh plugin`，也不阻塞 Phase 1–5 的工程工作。
 
 ## 7. 测试策略
 

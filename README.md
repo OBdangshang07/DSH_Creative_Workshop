@@ -31,6 +31,7 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 | [实施路线图](docs/09-roadmap.md) | 分阶段交付、验收条件、测试策略和风险 |
 | [决策记录](docs/10-decisions.md) | 已确定的架构选择与明确暂缓事项 |
 | [UI 设计项目规划](docs/11-ui-design-plan.md) | 信息架构、页面、一键状态机、评价/检索/依赖图的界面规则 |
+| [官方 UI 对齐与工具化](docs/12-official-ui-alignment-plan.md) | 抓取 deepseek.com/harness 与官方 Web UI，展示块改为可操作工具 |
 | [插件清单规范](spec/workshop-manifest.schema.json) | 工坊扩展元数据 JSON Schema（draft v0.1） |
 | [插件清单示例](examples/workshop-manifest.example.json) | 可复制的标准化元数据示例 |
 
