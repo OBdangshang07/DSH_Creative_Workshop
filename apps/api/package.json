@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --external:fastify --external:@fastify/cors --outfile=dist/server.js",
+    "build": "esbuild src/server.ts --bundle --platform=node --format=esm --external:fastify --external:@fastify/cors --external:yaml --outfile=dist/server.js",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit"
