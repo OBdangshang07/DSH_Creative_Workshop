@@ -1,6 +1,6 @@
 import cors from '@fastify/cors'
 import { randomUUID } from 'node:crypto'
-import Fastify, { type FastifyInstance } from 'fastify'
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import {
   aggregateReviews,
   buildPluginGraph,
@@ -12,6 +12,9 @@ import {
   type CommunityCatalogRepository,
 } from '@dsh-workshop/catalog'
 import type { PluginKind, RiskLevel, RuntimeEnvironment, SearchQuery } from '@dsh-workshop/domain'
+import { AccountStore, publicUser, type BootstrapAdmin, type ModerationStatus, type UserRole, type UserStatus } from './auth-store.js'
+import { fetchGitHubTopic } from './github-catalog.js'
+import { githubSeed } from './github-seed.js'
 
 const pluginKinds = new Set<PluginKind>([
   'bundle', 'cordis-plugin', 'skill-pack', 'mcp-bundle', 'integration', 'collection', 'ecosystem-tool',
@@ -24,6 +27,10 @@ const surfaces = new Set<NonNullable<SearchQuery['surface']>>(['web', 'headless'
 interface ApiOptions {
   repository?: CatalogRepository
   allowedOrigins?: readonly string[]
+  accountStore?: AccountStore
+  dataFile?: string
+  bootstrapAdmin?: BootstrapAdmin
+  githubToken?: string
 }
 
 interface PluginQuery {
@@ -57,6 +64,27 @@ function error(code: string, message: string, details: Record<string, unknown> =
   return { error: { code, message, details } }
 }
 
+function cookieValue(cookie: string | undefined, name: string): string | undefined {
+  if (cookie === undefined) return undefined
+  for (const entry of cookie.split(';')) {
+    const [key, ...value] = entry.trim().split('=')
+    if (key === name) return decodeURIComponent(value.join('='))
+  }
+  return undefined
+}
+
+function validUsername(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{2,31}$/.test(value)
+}
+
+function validEmail(value: unknown): value is string {
+  return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
+}
+
+function validPassword(value: unknown): value is string {
+  return typeof value === 'string' && value.length >= 10 && value.length <= 128 && /[A-Za-z]/.test(value) && /\d/.test(value)
+}
+
 function parseSearchQuery(query: PluginQuery): SearchQuery {
   const result: SearchQuery = {}
   if (query.q !== undefined && query.q.trim() !== '') result.q = query.q.trim().slice(0, 200)
@@ -84,14 +112,247 @@ function isCommunityRepository(repository: CatalogRepository): repository is Com
 export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstance> {
   const repository = options.repository ?? new InMemoryCatalogRepository()
   const allowedOrigins = new Set(options.allowedOrigins ?? ['http://localhost:5173', 'http://127.0.0.1:5173'])
-  const app = Fastify({ logger: false })
+  const accounts = options.accountStore ?? new AccountStore(options.dataFile)
+  await accounts.initialize(options.bootstrapAdmin, githubSeed)
+  const app = Fastify({ logger: false, trustProxy: '127.0.0.1' })
+  const authAttempts = new Map<string, { count: number; resetAt: number }>()
   await app.register(cors, {
     origin(origin, callback) {
       callback(null, origin === undefined || allowedOrigins.has(origin))
     },
+    credentials: true,
   })
 
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('X-Content-Type-Options', 'nosniff')
+    reply.header('X-Frame-Options', 'SAMEORIGIN')
+    reply.header('Referrer-Policy', 'strict-origin-when-cross-origin')
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method)) {
+      const origin = request.headers.origin
+      if (origin !== undefined && !allowedOrigins.has(origin)) {
+        return reply.code(403).send(error('AUTH_ORIGIN_DENIED', '请求来源未获授权'))
+      }
+    }
+  })
+
+  const currentUser = (request: FastifyRequest) =>
+    accounts.sessionUser(cookieValue(request.headers.cookie, 'dsh_session'))
+
+  const requireUser = (request: FastifyRequest, reply: FastifyReply) => {
+    const user = currentUser(request)
+    if (user === undefined) reply.code(401).send(error('AUTH_REQUIRED', '请先登录'))
+    return user
+  }
+
+  const requireAdmin = (request: FastifyRequest, reply: FastifyReply) => {
+    const user = currentUser(request)
+    if (user === undefined || user.role !== 'admin') reply.code(403).send(error('ADMIN_REQUIRED', '需要管理员权限'))
+    return user?.role === 'admin' ? user : undefined
+  }
+
+  const allowAuthAttempt = (request: FastifyRequest): boolean => {
+    const key = request.ip
+    const now = Date.now()
+    const current = authAttempts.get(key)
+    if (current === undefined || current.resetAt <= now) {
+      authAttempts.set(key, { count: 1, resetAt: now + 60_000 })
+      return true
+    }
+    current.count += 1
+    return current.count <= 12
+  }
+
   app.get('/health', async () => ({ ok: true, service: 'marketplace-api', catalogRevision: repository.snapshot().revision }))
+
+  app.get<{ Querystring: { q?: string; kind?: string } }>('/v1/github-plugins', async request => {
+    const snapshot = accounts.githubSnapshot(false)
+    const q = request.query.q?.trim().toLowerCase()
+    const kind = request.query.kind?.trim()
+    const items = snapshot.items.filter(item =>
+      (q === undefined || `${item.name} ${item.author} ${item.description} ${item.topics.join(' ')}`.toLowerCase().includes(q)) &&
+      (kind === undefined || kind === 'all' || item.kind === kind),
+    ).sort((left, right) => Number(right.moderation.featured) - Number(left.moderation.featured) || right.stars - left.stars)
+    return { source: 'https://github.com/topics/dsh-plugin', securityNotice: 'GitHub Topic 收录不代表官方认证或安全审计。', ...snapshot, items }
+  })
+
+  app.get('/v1/auth/me', async request => {
+    const user = currentUser(request)
+    return { authenticated: user !== undefined, user: user === undefined ? null : publicUser(user) }
+  })
+
+  app.post<{ Body: { username?: unknown; email?: unknown; password?: unknown } }>('/v1/auth/register', async (request, reply) => {
+    if (!allowAuthAttempt(request)) return reply.code(429).send(error('AUTH_RATE_LIMITED', '请求过于频繁，请稍后再试'))
+    const body = request.body ?? {}
+    if (!validUsername(body.username) || !validEmail(body.email) || !validPassword(body.password)) {
+      return reply.code(400).send(error('AUTH_INVALID_REGISTRATION', '用户名需为 3–32 位；邮箱需有效；密码至少 10 位且包含字母和数字'))
+    }
+    try {
+      const user = await accounts.createUser(body.username, body.email, body.password)
+      const session = await accounts.createSession(user.id)
+      reply.header('Set-Cookie', `dsh_session=${encodeURIComponent(session.token)}; Path=/api/; HttpOnly; Secure; SameSite=Strict; Expires=${new Date(session.expiresAt).toUTCString()}`)
+      return reply.code(201).send({ user: publicUser(user) })
+    } catch (cause) {
+      const code = cause instanceof Error ? cause.message : 'AUTH_REGISTRATION_FAILED'
+      if (code === 'AUTH_USERNAME_EXISTS' || code === 'AUTH_EMAIL_EXISTS') return reply.code(409).send(error(code, '用户名或邮箱已存在'))
+      throw cause
+    }
+  })
+
+  app.post<{ Body: { identity?: unknown; password?: unknown } }>('/v1/auth/login', async (request, reply) => {
+    if (!allowAuthAttempt(request)) return reply.code(429).send(error('AUTH_RATE_LIMITED', '登录尝试过于频繁，请稍后再试'))
+    const body = request.body ?? {}
+    if (typeof body.identity !== 'string' || typeof body.password !== 'string') {
+      return reply.code(400).send(error('AUTH_INVALID_LOGIN', '请输入账号和密码'))
+    }
+    const user = await accounts.authenticate(body.identity, body.password)
+    if (user === undefined) return reply.code(401).send(error('AUTH_LOGIN_FAILED', '账号或密码错误，或账号已停用'))
+    const session = await accounts.createSession(user.id)
+    reply.header('Set-Cookie', `dsh_session=${encodeURIComponent(session.token)}; Path=/api/; HttpOnly; Secure; SameSite=Strict; Expires=${new Date(session.expiresAt).toUTCString()}`)
+    return { user: publicUser(user) }
+  })
+
+  app.post('/v1/auth/logout', async (request, reply) => {
+    await accounts.deleteSession(cookieValue(request.headers.cookie, 'dsh_session'))
+    reply.header('Set-Cookie', 'dsh_session=; Path=/api/; HttpOnly; Secure; SameSite=Strict; Max-Age=0')
+    return { ok: true }
+  })
+
+  app.post<{ Body: { currentPassword?: unknown; nextPassword?: unknown } }>('/v1/auth/change-password', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    const { currentPassword, nextPassword } = request.body ?? {}
+    if (typeof currentPassword !== 'string' || !validPassword(nextPassword)) {
+      return reply.code(400).send(error('AUTH_INVALID_PASSWORD_CHANGE', '新密码至少 10 位且包含字母和数字'))
+    }
+    if (!await accounts.changePassword(user.id, currentPassword, nextPassword)) {
+      return reply.code(401).send(error('AUTH_CURRENT_PASSWORD_INVALID', '当前密码错误'))
+    }
+    reply.header('Set-Cookie', 'dsh_session=; Path=/api/; HttpOnly; Secure; SameSite=Strict; Max-Age=0')
+    return { ok: true, reloginRequired: true }
+  })
+
+  app.post<{ Params: { id: string } }>('/v1/me/favorites/:id/toggle', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    return { favorites: await accounts.toggleFavorite(user.id, request.params.id) }
+  })
+
+  app.post<{ Params: { id: string } }>('/v1/me/subscriptions/:id/toggle', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    return { subscriptions: await accounts.toggleSubscription(user.id, request.params.id) }
+  })
+
+  app.get('/v1/me/collections', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    return { items: accounts.userCollections(user.id) }
+  })
+
+  app.post<{ Body: { name?: unknown; description?: unknown; pluginIds?: unknown } }>('/v1/me/collections', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    const { name, description, pluginIds } = request.body ?? {}
+    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 ||
+      typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) ||
+      !pluginIds.every(id => typeof id === 'string')) {
+      return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明或插件列表无效'))
+    }
+    const validIds = new Set(accounts.githubSnapshot(false).items.map(item => item.id))
+    const safeIds = pluginIds.filter((id): id is string => typeof id === 'string' && validIds.has(id))
+    const collection = await accounts.createCollection(user.id, name.trim(), description.trim(), safeIds)
+    return reply.code(201).send({ collection })
+  })
+
+  app.delete<{ Params: { id: string } }>('/v1/me/collections/:id', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    if (!await accounts.deleteCollection(user.id, request.params.id)) return reply.code(404).send(error('COLLECTION_NOT_FOUND', '合集不存在'))
+    return { ok: true }
+  })
+
+  app.get<{ Params: { id: string } }>('/v1/github-plugins/:id/reviews', async request => {
+    const items = accounts.reviews(request.params.id)
+    const score = items.length === 0 ? 0 : Math.round(items.reduce((sum, review) => sum + review.rating, 0) / items.length * 10) / 10
+    return { summary: { count: items.length, score }, items }
+  })
+
+  app.post<{ Params: { id: string }; Body: { rating?: unknown; body?: unknown } }>('/v1/github-plugins/:id/reviews', async (request, reply) => {
+    const user = requireUser(request, reply)
+    if (user === undefined) return
+    const rating = request.body?.rating
+    const body = request.body?.body
+    if (typeof rating !== 'number' || !Number.isInteger(rating) || rating < 1 || rating > 5 ||
+      typeof body !== 'string' || body.trim().length < 4 || body.trim().length > 1000) {
+      return reply.code(400).send(error('REVIEW_INVALID', '评分须为 1–5，评价正文须为 4–1000 字'))
+    }
+    if (!accounts.githubSnapshot(false).items.some(plugin => plugin.id === request.params.id)) {
+      return reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未展示'))
+    }
+    return reply.code(201).send({ review: await accounts.addReview(user.id, request.params.id, rating, body.trim()) })
+  })
+
+  app.get('/v1/admin/overview', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.summary()
+  })
+
+  app.get('/v1/admin/users', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return { items: accounts.users().map(publicUser) }
+  })
+
+  app.patch<{ Params: { id: string }; Body: { role?: unknown; status?: unknown } }>('/v1/admin/users/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply)
+    if (admin === undefined) return
+    const role = request.body?.role
+    const status = request.body?.status
+    if ((role !== undefined && !['user', 'admin'].includes(role as string)) || (status !== undefined && !['active', 'disabled'].includes(status as string))) {
+      return reply.code(400).send(error('ADMIN_INVALID_USER_UPDATE', '角色或状态无效'))
+    }
+    if (admin.id === request.params.id && (role === 'user' || status === 'disabled')) {
+      return reply.code(400).send(error('ADMIN_SELF_LOCKOUT_DENIED', '不能停用自己或移除自己的管理员角色'))
+    }
+    const user = await accounts.updateUser(admin.id, request.params.id, {
+      ...(role === undefined ? {} : { role: role as UserRole }),
+      ...(status === undefined ? {} : { status: status as UserStatus }),
+    })
+    if (user === undefined) return reply.code(404).send(error('ADMIN_USER_NOT_FOUND', '用户不存在'))
+    return { user: publicUser(user) }
+  })
+
+  app.get('/v1/admin/plugins', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.githubSnapshot(true)
+  })
+
+  app.patch<{ Params: { id: string }; Body: { status?: unknown; featured?: unknown } }>('/v1/admin/plugins/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply)
+    if (admin === undefined) return
+    const status = request.body?.status
+    const featured = request.body?.featured
+    if ((status !== undefined && !['approved', 'pending', 'hidden'].includes(status as string)) || (featured !== undefined && typeof featured !== 'boolean')) {
+      return reply.code(400).send(error('ADMIN_INVALID_PLUGIN_UPDATE', '审核状态或精选值无效'))
+    }
+    const updated = await accounts.moderatePlugin(admin.id, request.params.id, {
+      ...(status === undefined ? {} : { status: status as ModerationStatus }),
+      ...(featured === undefined ? {} : { featured }),
+    })
+    if (!updated) return reply.code(404).send(error('ADMIN_PLUGIN_NOT_FOUND', '插件不存在'))
+    return { ok: true }
+  })
+
+  app.post('/v1/admin/github-sync', async (request, reply) => {
+    const admin = requireAdmin(request, reply)
+    if (admin === undefined) return
+    try {
+      const plugins = await fetchGitHubTopic(options.githubToken)
+      await accounts.replaceGitHubPlugins(admin.id, plugins)
+      return { ok: true, count: plugins.length, syncedAt: new Date().toISOString() }
+    } catch (cause) {
+      return reply.code(502).send(error('GITHUB_SYNC_FAILED', 'GitHub Topic 同步失败', { reason: cause instanceof Error ? cause.message : 'unknown' }))
+    }
+  })
 
   app.get('/v1/catalog', async () => {
     const snapshot = repository.snapshot()
