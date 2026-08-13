@@ -131,7 +131,13 @@ async function logout() {
 
 function updateAccountButton() {
   const button = document.getElementById('dshAccountButton');
-  if (button) button.textContent = currentUser ? `${currentUser.username}${currentUser.role === 'admin' ? ' · 管理' : ''}` : '登录 / 注册';
+  const label = currentUser ? `${currentUser.username}${currentUser.role === 'admin' ? ' · 管理' : ''}` : '登录 / 注册';
+  if (button && button.textContent !== label) button.textContent = label;
+  const count = document.getElementById('topSubCount');
+  if (count && currentUser) {
+    const value = `${currentUser.subscriptions.length} 件`;
+    if (count.textContent !== value) count.textContent = value;
+  }
 }
 
 async function showAdmin() {
@@ -193,8 +199,14 @@ function hydrateCards() {
     const title = card.querySelector('.steam-card-title');
     const author = card.querySelector('.steam-card-author');
     const thumb = card.querySelector('.steam-card-thumb');
-    if (title) { title.textContent = plugin.name; title.title = plugin.description; }
-    if (author) author.textContent = `创作者: ${plugin.author}`;
+    if (title) {
+      if (title.textContent !== plugin.name) title.textContent = plugin.name;
+      title.title = plugin.description;
+    }
+    if (author) {
+      const authorLabel = `创作者: ${plugin.author}`;
+      if (author.textContent !== authorLabel) author.textContent = authorLabel;
+    }
     if (thumb && !thumb.querySelector('.dsh-github-thumb')) {
       [...thumb.children].filter(child => !child.classList.contains('steam-card-quick-actions')).forEach(child => child.remove());
       const image = document.createElement('img');
@@ -207,11 +219,13 @@ function hydrateCards() {
     }
     let meta = card.querySelector('.dsh-github-meta');
     if (!meta) { meta = document.createElement('div'); meta.className = 'dsh-github-meta'; card.querySelector('.steam-card-info')?.appendChild(meta); }
-    meta.innerHTML = `<strong>★ ${plugin.stars.toLocaleString()}</strong> · ${escapeHtml(plugin.language || 'Other')} · GitHub`;
+    const metaHtml = `<strong>★ ${plugin.stars.toLocaleString()}</strong> · ${escapeHtml(plugin.language || 'Other')} · GitHub`;
+    if (meta.innerHTML !== metaHtml) meta.innerHTML = metaHtml;
   });
   if (!document.querySelector('.dsh-source-banner')) {
     document.getElementById('steamAppMain')?.insertAdjacentHTML('afterbegin', '<div class="dsh-source-banner">当前项目来自 <a href="https://github.com/topics/dsh-plugin" target="_blank" rel="noopener">GitHub dsh-plugin Topic</a>；按活跃度与元数据完整度筛选。收录不代表官方认证或安全审计，安装前请检查源码与权限。</div>');
   }
+  updateAccountButton();
   observerBusy = false;
 }
 

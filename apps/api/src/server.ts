@@ -6,6 +6,9 @@ const allowedOrigins = (process.env.WORKSHOP_ALLOWED_ORIGINS ?? 'http://localhos
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean)
+if (process.env.WORKSHOP_ADMIN_PASSWORD !== undefined && process.env.WORKSHOP_ADMIN_PASSWORD.length < 10) {
+  throw new Error('WORKSHOP_ADMIN_PASSWORD must contain at least 10 characters')
+}
 const bootstrapAdmin = process.env.WORKSHOP_ADMIN_PASSWORD === undefined ? undefined : {
   username: process.env.WORKSHOP_ADMIN_USERNAME ?? 'admin',
   email: process.env.WORKSHOP_ADMIN_EMAIL ?? 'admin@localhost.invalid',
