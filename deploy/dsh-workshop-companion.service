@@ -1,0 +1,36 @@
+[Unit]
+Description=DSH Creative Workshop Companion (loopback-only dry-run)
+After=network.target
+
+[Service]
+Type=simple
+User=dsh-workshop
+Group=dsh-workshop
+WorkingDirectory=/opt/dsh-creative-workshop
+Environment=NODE_ENV=production
+Environment=WORKSHOP_COMPANION_HOST=127.0.0.1
+Environment=WORKSHOP_COMPANION_PORT=45731
+Environment=WORKSHOP_ALLOWED_ORIGINS=https://xxnmkk.xyz,https://www.xxnmkk.xyz
+ExecStart=/usr/bin/node /opt/dsh-creative-workshop/apps/companion/dist/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
