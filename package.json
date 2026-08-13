@@ -1,0 +1,13 @@
+{
+  "name": "dsh-creative-workshop",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness Creative Workshop - Marketplace & Companion Daemon",
+  "main": "server/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.js",
+    "companion": "node server/index.js --companion-only"
+  },
+  "keywords": ["deepseek-harness", "cordis", "workshop", "companion", "agent"],
+  "license": "MIT"
+}

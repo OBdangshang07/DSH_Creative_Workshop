@@ -1,0 +1,630 @@
+/**
+ * DSH Creative Workshop - Component Styles
+ * 卡片骨架、状态机主按钮、四段信号条、快览检查器、三态过滤器与插层弹窗
+ */
+
+/* ==========================================================================
+   1. 插件卡片骨架 (PluginCard - 3:2 固定比例与统一骨架)
+   ========================================================================== */
+.ds-card {
+  position: relative;
+  background: var(--ds-bg-card);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: transform var(--ds-transition-fast), border-color var(--ds-transition-fast), box-shadow var(--ds-transition-fast);
+  cursor: pointer;
+}
+
+.ds-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: var(--ds-shadow-md);
+  background: var(--ds-bg-card-hover);
+}
+
+.ds-card-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  background: #111116;
+  border-bottom: 1px solid var(--ds-border-subtle);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 形态矢量示意插图 */
+.ds-media-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: radial-gradient(circle at 50% 30%, rgba(77, 107, 254, 0.08) 0%, transparent 70%);
+  color: var(--ds-text-secondary);
+}
+
+.ds-media-fallback svg {
+  stroke-width: 1.2px;
+  color: var(--ds-text-secondary);
+  opacity: 0.85;
+}
+
+.ds-media-kind-label {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+}
+
+/* 悬停放大镜快捷快览入口 */
+.ds-card-quickview-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ds-radius-sm);
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--ds-text-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-card:hover .ds-card-quickview-btn {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.ds-card-quickview-btn:hover {
+  background: var(--ds-color-brand);
+  border-color: var(--ds-color-brand);
+}
+
+/* 卡片内容区 */
+.ds-card-body {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+
+.ds-card-meta-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.ds-kind-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-secondary);
+  font-size: 10px;
+}
+
+.ds-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  line-height: 1.35;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ds-card-author {
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+
+.ds-card-capabilities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: auto;
+  padding-top: 6px;
+}
+
+.ds-chip-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  font-size: 10.5px;
+  font-family: var(--ds-font-mono);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--ds-border-subtle);
+  color: var(--ds-text-secondary);
+  cursor: pointer;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-chip-cap:hover {
+  background: var(--ds-color-brand-subtle);
+  border-color: var(--ds-color-brand-border);
+  color: var(--ds-color-brand);
+}
+
+.ds-chip-cap.is-provide {
+  border-left: 2px solid var(--ds-color-brand);
+}
+
+.ds-chip-cap.is-inject {
+  border-left: 2px solid var(--ds-state-warning);
+}
+
+/* ==========================================================================
+   2. 四段独立信号条 (SignalBar)
+   ========================================================================== */
+.ds-signal-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 10px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--ds-border-subtle);
+  border-radius: var(--ds-radius-sm);
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+}
+
+.ds-signal-segment {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--ds-text-secondary);
+}
+
+.ds-signal-star {
+  color: #FBBF24;
+}
+
+.ds-compat-lamp {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 6px;
+  border-radius: 3px;
+}
+
+.ds-compat-lamp.is-verified {
+  background: var(--ds-state-success-bg);
+  color: var(--ds-state-success);
+}
+.ds-compat-lamp.is-warning {
+  background: var(--ds-state-warning-bg);
+  color: var(--ds-state-warning);
+}
+.ds-compat-lamp.is-danger {
+  background: var(--ds-state-danger-bg);
+  color: var(--ds-state-danger);
+}
+
+.ds-lamp-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ds-trend-up {
+  color: var(--ds-state-success);
+}
+
+/* ==========================================================================
+   3. 核心主按钮状态机 (PrimaryInstallButton)
+   ========================================================================== */
+.ds-btn-install {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 16px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--ds-transition-fast);
+  white-space: nowrap;
+}
+
+/* 状态 1: 未安装 (可直接挂载) - 官方深黑实心/浅白文字微边框 */
+.ds-btn-install.state-idle {
+  background: rgba(255, 255, 255, 0.95);
+  color: #0A0A0A;
+  font-weight: 600;
+}
+.ds-btn-install.state-idle:hover {
+  background: #FFFFFF;
+  box-shadow: 0 0 12px rgba(255, 255, 255, 0.2);
+}
+
+/* 状态 2: 预检中 / 正在执行 (脉冲动画) */
+.ds-btn-install.state-running {
+  background: var(--ds-color-brand);
+  color: #FFFFFF;
+  cursor: wait;
+  animation: dsPulse 1.4s infinite ease-in-out;
+}
+
+@keyframes dsPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.65; }
+}
+
+/* 状态 3: 已安装 (已挂载到当前 Profile) - 官方绿点 */
+.ds-btn-install.state-installed {
+  background: var(--ds-state-success-bg);
+  border: 1px solid var(--ds-state-success-border);
+  color: var(--ds-state-success);
+}
+
+/* 状态 4: 可更新 */
+.ds-btn-install.state-updatable {
+  background: var(--ds-color-brand-subtle);
+  border: 1px solid var(--ds-color-brand-border);
+  color: var(--ds-color-brand);
+}
+
+/* 状态 5: 需要信任/配置/依赖补齐 (升级态) */
+.ds-btn-install.state-needs-trust {
+  background: var(--ds-state-warning-bg);
+  border: 1px solid var(--ds-state-warning-border);
+  color: var(--ds-state-warning);
+}
+
+/* 状态 6: 降级模式 (断连 Companion - 复制命令) */
+.ds-btn-install.state-copy {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--ds-border-default);
+  color: var(--ds-text-primary);
+}
+.ds-btn-install.state-copy:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/* ==========================================================================
+   4. 快览检查器面板 (QuickView Inspector)
+   ========================================================================== */
+.ds-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-transition-fast);
+}
+
+.ds-modal-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ds-quickview-panel {
+  width: 100%;
+  max-width: 980px;
+  max-height: 88vh;
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-modal);
+  box-shadow: var(--ds-shadow-popover);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transform: scale(0.97);
+  transition: transform var(--ds-transition-fast);
+}
+
+.ds-modal-overlay.is-open .ds-quickview-panel {
+  transform: scale(1);
+}
+
+.ds-quickview-header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--ds-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--ds-bg-workbench);
+}
+
+.ds-quickview-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ds-quickview-close {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--ds-transition-fast);
+}
+.ds-quickview-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ds-text-primary);
+}
+
+/* 快览双栏主体 */
+.ds-quickview-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 360px 1fr;
+  overflow: hidden;
+}
+
+.ds-quickview-left {
+  padding: 20px;
+  border-right: 1px solid var(--ds-border-subtle);
+  background: var(--ds-bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.ds-quickview-right {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+/* 检查器 Tab 切换 */
+.ds-inspector-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px solid var(--ds-border-subtle);
+  padding-bottom: 8px;
+}
+
+.ds-tab-btn {
+  padding: 6px 12px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 12px;
+  color: var(--ds-text-secondary);
+  font-weight: 500;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-tab-btn:hover {
+  color: var(--ds-text-primary);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.ds-tab-btn.is-active {
+  color: var(--ds-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+/* 12 键严格规格表 */
+.ds-spec-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: var(--ds-font-mono);
+}
+
+.ds-spec-table th,
+.ds-spec-table td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--ds-border-subtle);
+}
+
+.ds-spec-table th {
+  width: 120px;
+  color: var(--ds-text-muted);
+  font-weight: 400;
+}
+
+.ds-spec-table td {
+  color: var(--ds-text-primary);
+}
+
+/* 快览底部操作条 */
+.ds-quickview-footer {
+  padding: 14px 20px;
+  background: var(--ds-bg-workbench);
+  border-top: 1px solid var(--ds-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+/* ==========================================================================
+   5. 三态左栏过滤器 (FilterRail)
+   ========================================================================== */
+.ds-filter-rail {
+  width: 260px;
+  flex-shrink: 0;
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  height: fit-content;
+}
+
+.ds-filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ds-filter-group-title {
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+  font-weight: 600;
+}
+
+.ds-tristate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  padding: 4px 6px;
+  border-radius: var(--ds-radius-sm);
+  transition: background var(--ds-transition-fast);
+}
+
+.ds-tristate-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.ds-tristate-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 2px;
+  border-radius: 4px;
+  border: 1px solid var(--ds-border-subtle);
+}
+
+.ds-tristate-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-tristate-btn:hover {
+  color: var(--ds-text-primary);
+}
+
+.ds-tristate-btn.is-active-include {
+  background: var(--ds-state-success-bg);
+  color: var(--ds-state-success);
+  font-weight: bold;
+}
+
+.ds-tristate-btn.is-active-exclude {
+  background: var(--ds-state-danger-bg);
+  color: var(--ds-state-danger);
+  font-weight: bold;
+}
+
+/* ==========================================================================
+   6. 邻居关系抽屉 (Neighbor Drawer)
+   ========================================================================== */
+.ds-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  background: rgba(0, 0, 0, 0.5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--ds-transition-fast);
+}
+.ds-drawer-overlay.is-open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.ds-neighbor-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 440px;
+  background: var(--ds-bg-panel);
+  border-left: 1px solid var(--ds-border-default);
+  box-shadow: var(--ds-shadow-popover);
+  transform: translateX(100%);
+  transition: transform var(--ds-transition-normal);
+  display: flex;
+  flex-direction: column;
+  z-index: 120;
+}
+
+.ds-drawer-overlay.is-open + .ds-neighbor-drawer,
+.ds-neighbor-drawer.is-open {
+  transform: translateX(0);
+}
+
+/* ==========================================================================
+   7. 提示 Toast 系统
+   ========================================================================== */
+.ds-toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.ds-toast {
+  pointer-events: auto;
+  min-width: 280px;
+  max-width: 400px;
+  padding: 12px 16px;
+  background: var(--ds-bg-elevated);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-sm);
+  box-shadow: var(--ds-shadow-lg);
+  font-size: 13px;
+  color: var(--ds-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  animation: dsToastSlide 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes dsToastSlide {
+  from { transform: translateY(16px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}

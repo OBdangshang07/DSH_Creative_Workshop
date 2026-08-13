@@ -1,0 +1,71 @@
+/**
+ * DSH Creative Workshop - Design Tokens
+ * 严格对齐官方 deepseek.com/harness (--ds-*) 与产品工作台 (--dsw-alias-*)
+ * 保持极客、专业、克制的暗色工作台美学
+ */
+
+:root {
+  /* 品牌核心色 (官方品牌蓝 - 仅作画龙点睛的焦点与选中强调，不滥用铺底) */
+  --ds-color-brand: #4D6BFE;
+  --ds-color-brand-hover: #3E5DE8;
+  --ds-color-brand-deep: #3A65C2;
+  --ds-color-brand-subtle: rgba(77, 107, 254, 0.12);
+  --ds-color-brand-border: rgba(77, 107, 254, 0.35);
+
+  /* 工作台暗黑表面分层 (--dsw-alias-bg-*) */
+  --ds-bg-page: #09090B;        /* 极致深黑底色 */
+  --ds-bg-workbench: #0D0D11;   /* 主工作台区域 */
+  --ds-bg-panel: #131318;       /* 侧边栏、卡片底板 */
+  --ds-bg-card: #17171F;        /* 卡片主体 */
+  --ds-bg-card-hover: #1D1D27;  /* 卡片悬停态 */
+  --ds-bg-elevated: #22222D;    /* 下拉菜单、模态框浮层 */
+  --ds-bg-input: #101015;       /* 输入框背景 */
+
+  /* 状态与语义色 (克制明确，绿点对齐官方已启用状态) */
+  --ds-state-success: #22C55E;         /* 官方已启用/实测通过绿 */
+  --ds-state-success-bg: rgba(34, 197, 94, 0.12);
+  --ds-state-success-border: rgba(34, 197, 94, 0.25);
+  
+  --ds-state-warning: #EAB308;         /* 信任提示/构建脚本琥珀黄 */
+  --ds-state-warning-bg: rgba(234, 179, 8, 0.12);
+  --ds-state-warning-border: rgba(234, 179, 8, 0.25);
+
+  --ds-state-danger: #EF4444;          /* 冲突/失败珊瑚红 */
+  --ds-state-danger-bg: rgba(239, 68, 68, 0.12);
+  --ds-state-danger-border: rgba(239, 68, 68, 0.25);
+
+  --ds-state-info: #38BDF8;            /* 提示青蓝 */
+
+  /* 文本色阶 (清晰、高对比度、无视觉干扰) */
+  --ds-text-primary: #F8FAFC;          /* 主标题、重点文本 (接近纯白) */
+  --ds-text-secondary: #94A3B8;        /* 正文、次要说明 */
+  --ds-text-muted: #64748B;            /* 辅助说明、不可用状态 */
+  --ds-text-dim: #475569;              /* 占位符、微小时间戳 */
+
+  /* 边框与分割线 (极细、低饱和度) */
+  --ds-border-subtle: rgba(255, 255, 255, 0.07);
+  --ds-border-default: rgba(255, 255, 255, 0.12);
+  --ds-border-active: rgba(77, 107, 254, 0.5);
+
+  /* 字体家族 */
+  --ds-font-display: 'Host Grotesk', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --ds-font-body: 'DM Sans', -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --ds-font-mono: 'Fragment Mono', 'Roboto Mono', 'SFMono-Regular', Consolas, Menlo, monospace;
+
+  /* 圆角规范 (工作台严谨圆角) */
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 10px;
+  --ds-radius-card: 14px;
+  --ds-radius-modal: 16px;
+  --ds-radius-pill: 9999px;
+
+  /* 阴影规范 (极轻柔深黑环境遮罩) */
+  --ds-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --ds-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --ds-shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  --ds-shadow-popover: 0 20px 48px -8px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(255, 255, 255, 0.08);
+
+  /* 动效过渡 (平滑、克制、无过冲) */
+  --ds-transition-fast: 140ms cubic-bezier(0.16, 1, 0.3, 1);
+  --ds-transition-normal: 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}

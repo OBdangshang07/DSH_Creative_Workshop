@@ -1,0 +1,319 @@
+/**
+ * DSH Creative Workshop - Views Styles
+ * 首页货架、四模式预设条、目录浏览、档案层叠板与图谱视图布局
+ */
+
+/* ==========================================================================
+   1. 首页 (Home View)
+   ========================================================================== */
+.ds-home-view {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+}
+
+/* 极简短 Hero (对齐工作台，不搞冗长营销页) */
+.ds-hero-compact {
+  padding: 24px;
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.ds-hero-compact::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 320px;
+  height: 100%;
+  background: radial-gradient(circle at 100% 0%, rgba(77, 107, 254, 0.1) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.ds-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 680px;
+}
+
+.ds-hero-title {
+  font-family: var(--ds-font-display);
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  letter-spacing: -0.02em;
+}
+
+.ds-hero-subtitle {
+  font-size: 13px;
+  color: var(--ds-text-secondary);
+  line-height: 1.6;
+}
+
+/* 官方 4 种模式预设条 (System Presets Bar) */
+.ds-presets-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ds-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ds-section-title {
+  font-family: var(--ds-font-display);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ds-section-badge {
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-muted);
+  font-weight: 400;
+}
+
+.ds-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+}
+
+.ds-preset-card {
+  background: var(--ds-bg-card);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: all var(--ds-transition-fast);
+  cursor: pointer;
+}
+
+.ds-preset-card:hover {
+  border-color: var(--ds-color-brand-border);
+  background: var(--ds-bg-card-hover);
+}
+
+.ds-preset-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ds-preset-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+}
+
+.ds-preset-desc {
+  font-size: 12px;
+  color: var(--ds-text-secondary);
+  line-height: 1.45;
+  flex: 1;
+}
+
+.ds-preset-bundles {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--ds-text-muted);
+}
+
+/* 货架通用网格 */
+.ds-shelf-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+}
+
+/* ==========================================================================
+   2. 目录与检索浏览 (Browse View)
+   ========================================================================== */
+.ds-browse-view {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.ds-browse-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ds-browse-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-sm);
+  padding: 8px 14px;
+}
+
+.ds-browse-count {
+  font-size: 12px;
+  color: var(--ds-text-secondary);
+  font-family: var(--ds-font-mono);
+}
+
+.ds-active-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.ds-filter-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-primary);
+}
+
+.ds-filter-tag-close {
+  cursor: pointer;
+  color: var(--ds-text-muted);
+}
+.ds-filter-tag-close:hover {
+  color: var(--ds-state-danger);
+}
+
+/* ==========================================================================
+   3. 我的档案层叠板 (My Profile Layer Stack)
+   ========================================================================== */
+.ds-profile-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.ds-profile-header-card {
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ds-layer-stack-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ds-layer-row {
+  background: var(--ds-bg-card);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-sm);
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  transition: all var(--ds-transition-fast);
+  cursor: grab;
+}
+
+.ds-layer-row:hover {
+  background: var(--ds-bg-card-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.ds-layer-row.is-dragging {
+  opacity: 0.5;
+  cursor: grabbing;
+}
+
+.ds-layer-drag-handle {
+  color: var(--ds-text-muted);
+  cursor: grab;
+  margin-right: 12px;
+}
+
+.ds-layer-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.ds-layer-order {
+  font-family: var(--ds-font-mono);
+  font-size: 11px;
+  color: var(--ds-text-muted);
+  width: 24px;
+}
+
+.ds-layer-name {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ds-text-primary);
+}
+
+.ds-layer-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* ==========================================================================
+   4. 图谱与可视化视图 (Graph View)
+   ========================================================================== */
+.ds-graph-view {
+  background: var(--ds-bg-workbench);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-card);
+  height: 640px;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ds-graph-toolbar {
+  padding: 12px 16px;
+  background: var(--ds-bg-panel);
+  border-bottom: 1px solid var(--ds-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ds-graph-canvas-container {
+  flex: 1;
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+canvas#graphCanvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}

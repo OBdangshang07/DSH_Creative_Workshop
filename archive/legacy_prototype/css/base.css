@@ -1,0 +1,281 @@
+/**
+ * DSH Creative Workshop - Base Styles
+ * 基础重置、全局排版、滚动条、通用容器与顶栏
+ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 14px;
+  color-scheme: dark;
+  background-color: var(--ds-bg-page);
+  color: var(--ds-text-primary);
+  font-family: var(--ds-font-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--ds-bg-page);
+  overflow-x: hidden;
+}
+
+/* 滚动条克制化 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+/* 链接与按钮基础 */
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button {
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+/* 顶部导航壳层 (对齐官方 deepseek.com/harness 顶栏) */
+.ds-header-wrapper {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  width: 100%;
+  background: rgba(9, 9, 11, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom: 1px solid var(--ds-border-subtle);
+}
+
+.ds-header-bar {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 0 24px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.ds-logo-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--ds-font-display);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--ds-text-primary);
+}
+
+.ds-logo-whale {
+  color: var(--ds-color-brand);
+  display: flex;
+  align-items: center;
+}
+
+.ds-logo-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  font-size: 11px;
+  font-family: var(--ds-font-mono);
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-text-secondary);
+}
+
+/* 顶栏主导航链接 */
+.ds-nav-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ds-nav-item {
+  padding: 6px 14px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ds-text-secondary);
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-nav-item:hover {
+  color: var(--ds-text-primary);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ds-nav-item.is-active {
+  color: var(--ds-text-primary);
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+}
+
+/* 顶栏右侧环境控制器 */
+.ds-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 快速全局搜索栏 */
+.ds-quick-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.ds-search-input {
+  width: 220px;
+  height: 32px;
+  background: var(--ds-bg-input);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-sm);
+  padding: 0 32px 0 28px;
+  color: var(--ds-text-primary);
+  font-size: 12px;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-search-input:focus {
+  width: 280px;
+  border-color: var(--ds-color-brand);
+  background: #15151B;
+  box-shadow: 0 0 0 2px var(--ds-color-brand-subtle);
+}
+
+.ds-search-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--ds-text-muted);
+  pointer-events: none;
+}
+
+.ds-search-kbd {
+  position: absolute;
+  right: 8px;
+  padding: 1px 5px;
+  font-size: 10px;
+  font-family: var(--ds-font-mono);
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  color: var(--ds-text-muted);
+  pointer-events: none;
+}
+
+/* Profile 芯片切换器 */
+.ds-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  background: var(--ds-bg-panel);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-sm);
+  font-size: 12px;
+  font-family: var(--ds-font-mono);
+  color: var(--ds-text-primary);
+  cursor: pointer;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-profile-chip:hover {
+  border-color: var(--ds-border-active);
+  background: var(--ds-bg-card-hover);
+}
+
+.ds-profile-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ds-color-brand);
+}
+
+/* Companion 连接状态胶囊 */
+.ds-companion-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: var(--ds-radius-sm);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--ds-transition-fast);
+}
+
+.ds-companion-status.is-connected {
+  background: var(--ds-state-success-bg);
+  border: 1px solid var(--ds-state-success-border);
+  color: var(--ds-state-success);
+}
+
+.ds-companion-status.is-disconnected {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--ds-border-default);
+  color: var(--ds-text-muted);
+}
+
+.ds-status-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.ds-companion-status.is-connected .ds-status-indicator {
+  box-shadow: 0 0 8px currentColor;
+}
+
+/* 主内容工作区容器 */
+.ds-main-layout {
+  flex: 1;
+  max-width: 1440px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+/* 底部状态条 (对齐极简工坊规范) */
+.ds-footer {
+  border-top: 1px solid var(--ds-border-subtle);
+  padding: 20px 24px;
+  font-size: 12px;
+  color: var(--ds-text-muted);
+  background: var(--ds-bg-page);
+}
+
+.ds-footer-inner {
+  max-width: 1440px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}

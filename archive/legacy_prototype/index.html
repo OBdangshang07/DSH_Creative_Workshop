@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DSH Creative Workshop - DeepSeek Harness 创意工坊</title>
+  <meta name="description" content="面向 DeepSeek Harness 插件生态的创意工坊式发现、评估、组合与安装平台。">
+
+  <!-- 引入 Google 科技感字族 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Host+Grotesk:ital,wght@0,300..800;1,300..800&family=Roboto+Mono:ital,wght@0,100..700;1,100..700&display=swap" rel="stylesheet">
+
+  <!-- 样式层分层引入 -->
+  <link rel="stylesheet" href="css/design-tokens.css">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/components.css">
+  <link rel="stylesheet" href="css/views.css">
+</head>
+<body>
+
+  <!-- 顶部导航栏 (对齐官方 deepseek.com/harness 顶栏质感) -->
+  <header class="ds-header-wrapper">
+    <div class="ds-header-bar">
+      
+      <!-- 官方品牌鲸标与文字 -->
+      <div class="ds-logo-group">
+        <a href="#home" class="flex items-center gap-2 js-nav-item" data-view="home" style="display: flex; align-items: center; gap: 8px;">
+          <span class="ds-logo-whale">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+              <path d="M3 14c0 3.87 3.13 7 7 7 5.52 0 10-4.48 10-10 0-2.21-.89-4.21-2.34-5.66L15 3c-1.5 1.5-2.5 3.5-2.5 5.5 0 .83.67 1.5 1.5 1.5s1.5-.67 1.5-1.5c0-1.04.42-1.99 1.1-2.69C17.42 6.64 18 7.75 18 9c0 4.41-3.59 8-8 8-2.76 0-5-2.24-5-5h-2z"/>
+            </svg>
+          </span>
+          <span style="font-weight: 700;">DSH Workshop</span>
+        </a>
+        <span class="ds-logo-badge">Developer Preview</span>
+      </div>
+
+      <!-- 主导航链接 -->
+      <nav class="ds-nav-links">
+        <button class="ds-nav-item js-nav-item is-active" data-view="home">发现货架</button>
+        <button class="ds-nav-item js-nav-item" data-view="browse">插件目录</button>
+        <button class="ds-nav-item js-nav-item" data-view="profile">我的档案</button>
+        <button class="ds-nav-item js-nav-item" data-view="graph">Seam 图谱</button>
+        <button class="ds-nav-item js-nav-item" data-view="discussions">讨论与评价</button>
+        <button class="ds-nav-item js-nav-item" data-view="about">关于</button>
+      </nav>
+
+      <!-- 顶栏右侧工具箱 (搜索 / Profile / Companion / Steam版本切换) -->
+      <div class="ds-header-controls" style="position: relative;">
+        <div class="ds-quick-search">
+          <svg class="ds-search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input type="text" id="globalSearchInput" class="ds-search-input" placeholder="搜索插件 / 能力 / 键...">
+          <kbd class="ds-search-kbd">/</kbd>
+        </div>
+
+        <!-- 目标 Profile 切换器 -->
+        <button id="profileSwitcherBtn" class="ds-profile-chip" title="点击切换目标 Profile">
+          <span class="ds-profile-dot"></span>
+          <span id="currentProfileText">default-web</span>
+        </button>
+
+        <!-- Profile 下拉菜单 -->
+        <div id="profileDropdownMenu" class="hidden" style="position: absolute; top: 48px; right: 280px; width: 190px; background: #161a22; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,0.8); z-index: 100; padding: 6px 0;">
+          <div id="profileListContainer"></div>
+        </div>
+
+        <!-- 本机 Companion 状态模拟器 -->
+        <button id="companionStatusBtn" class="ds-companion-status is-connected" title="点击模拟切换 Companion 连接状态">
+          <span id="companionDot" class="w-2 h-2 rounded-full bg-state-success shadow-[0_0_8px_#10B981]"></span>
+          <span id="companionLabel" class="text-state-success font-mono text-xs">Companion 已连接</span>
+        </button>
+
+        <!-- Steam 社区工坊范式体验开关 -->
+        <a href="steam_workshop_demo.html" class="px-2.5 py-1 rounded bg-[#1A9FFF]/20 border border-[#1A9FFF]/40 text-[#66C0F4] hover:bg-[#1A9FFF]/30 text-xs font-semibold flex items-center gap-1.5" title="体验 Steam Community Workshop 风格">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="6" width="20" height="12" rx="6"/><line x1="6" y1="12" x2="10" y2="12"/><line x1="8" y1="10" x2="8" y2="14"/><circle cx="15" cy="11" r="1"/><circle cx="17" cy="13" r="1"/></svg>
+          <span>Steam 社区范式</span>
+        </a>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- 主内容渲染区域 -->
+  <main class="ds-main-layout">
+    <div id="appMain"></div>
+  </main>
+
+  <!-- 极简页脚 -->
+  <footer class="ds-footer">
+    <div class="ds-footer-inner">
+      <div>DeepSeek Harness Creative Workshop · 社区独立规划样机 (基于 DSH 0.1.0-rc.5)</div>
+      <div class="flex items-center gap-4" style="display: flex; gap: 16px;">
+        <a href="steam_workshop_demo.html" class="hover:text-primary">Steam 社区版</a>
+        <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank" class="hover:text-primary">GitHub</a>
+        <a href="https://www.deepseek.com/harness/" target="_blank" class="hover:text-primary">官方主页</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- 浮层与模态框容器 -->
+  <div id="modalContainer"></div>
+
+  <!-- Toast 消息容器 -->
+  <div id="toastContainer" class="ds-toast-container"></div>
+
+  <!-- 现代模块化应用入口 -->
+  <script type="module">
+    import { initApp } from './js/app.js';
+    initApp();
+  </script>
+</body>
+</html>
