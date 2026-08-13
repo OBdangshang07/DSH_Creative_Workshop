@@ -6,7 +6,17 @@ const allowedOrigins = (process.env.WORKSHOP_ALLOWED_ORIGINS ?? 'http://localhos
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean)
-const app = await buildApi({ allowedOrigins })
+const bootstrapAdmin = process.env.WORKSHOP_ADMIN_PASSWORD === undefined ? undefined : {
+  username: process.env.WORKSHOP_ADMIN_USERNAME ?? 'admin',
+  email: process.env.WORKSHOP_ADMIN_EMAIL ?? 'admin@localhost.invalid',
+  password: process.env.WORKSHOP_ADMIN_PASSWORD,
+}
+const app = await buildApi({
+  allowedOrigins,
+  dataFile: process.env.WORKSHOP_DATA_FILE ?? '/var/lib/dsh-workshop/data.json',
+  ...(bootstrapAdmin === undefined ? {} : { bootstrapAdmin }),
+  ...(process.env.GITHUB_TOKEN === undefined ? {} : { githubToken: process.env.GITHUB_TOKEN }),
+})
 
 try {
   await app.listen({ host, port })
