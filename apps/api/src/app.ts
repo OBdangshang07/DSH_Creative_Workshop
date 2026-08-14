@@ -1,11 +1,13 @@
 import cors from '@fastify/cors'
 import { randomUUID } from 'node:crypto'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
-import { AccountStore, publicUser, type BootstrapAdmin, type CatalogQuery, type ModerationStatus, type UserRole, type UserStatus } from './auth-store.js'
+import { AccountStore, publicUser, type BootstrapAdmin, type CatalogQuery, type ModerationStatus, type NotificationPreferences, type RevisionChangeItem, type UserRole, type UserStatus } from './auth-store.js'
 import { githubSeed } from './github-seed.js'
+import { collectGitHubReleaseNotes } from './github-catalog.js'
 import { CatalogSyncService } from './sync-service.js'
 import { APP_VERSION } from './version.js'
 import { PresenceService } from './presence-service.js'
+import { loadWorkshopRelease } from './release-manifest.js'
 
 interface ApiOptions {
   allowedOrigins?: readonly string[]
@@ -21,7 +23,7 @@ interface ApiOptions {
 interface PageQuery {
   q?: string; role?: string; status?: string; kind?: string; action?: string
   surface?: string; topic?: string; author?: string; language?: string; license?: string; sort?: string
-  page?: string; pageSize?: string
+  category?: string; pluginId?: string; page?: string; pageSize?: string
 }
 
 const error = (code: string, message: string, details: Record<string, unknown> = {}) => ({ error: { code, message, details } })
@@ -38,6 +40,10 @@ function cookieValue(cookie: string | undefined, name: string): string | undefin
 function validUsername(value: unknown): value is string { return typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{2,31}$/.test(value) }
 function validEmail(value: unknown): value is string { return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) }
 function validPassword(value: unknown): value is string { return typeof value === 'string' && value.length >= 10 && value.length <= 128 && /[A-Za-z]/.test(value) && /\d/.test(value) }
+function validGitHubUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false
+  try { const url = new URL(value); return url.protocol === 'https:' && ['github.com','www.github.com'].includes(url.hostname) } catch { return false }
+}
 function pageNumber(value: string | undefined, fallback: number): number { const parsed = Number.parseInt(value ?? '', 10); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback }
 const catalogSorts = new Set<NonNullable<CatalogQuery['sort']>>(['stars', 'recent', 'name', 'rating', 'subscriptions'])
 function catalogSort(value: string | undefined): CatalogQuery['sort'] { return value !== undefined && catalogSorts.has(value as NonNullable<CatalogQuery['sort']>) ? value as NonNullable<CatalogQuery['sort']> : undefined }
@@ -46,6 +52,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   const allowedOrigins = new Set(options.allowedOrigins ?? ['http://localhost:5173', 'http://127.0.0.1:5173'])
   const accounts = options.accountStore ?? new AccountStore(options.dataFile, options.legacyDataFile)
   await accounts.initialize(options.bootstrapAdmin, githubSeed)
+  accounts.publishWorkshopRelease(await loadWorkshopRelease())
   const sync = new CatalogSyncService(accounts, options.githubToken)
   const presence = options.presenceService ?? new PresenceService()
   let lastPresenceBucket = ''
@@ -140,6 +147,15 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const item = accounts.publicPlugin(request.params.id)
     return item === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { plugin: item }
   })
+  app.get<{ Params: { id: string } }>('/v1/plugins/:id/revisions', async (request, reply) => {
+    const items = accounts.pluginRevisions(request.params.id)
+    return items === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { items }
+  })
+  app.get<{ Params: { id: string; revisionId: string } }>('/v1/plugins/:id/revisions/:revisionId', async (request, reply) => {
+    const revision = accounts.pluginRevision(request.params.id, request.params.revisionId)
+    return revision === undefined ? reply.code(404).send(error('CATALOG_REVISION_NOT_FOUND', '插件版本不存在或未公开')) : { revision }
+  })
+  app.get('/v1/releases', async () => ({ items: accounts.workshopReleases() }))
 
   app.get('/v1/auth/me', async request => { const user = currentUser(request); return { authenticated: user !== undefined, user: user === undefined ? null : publicUser(user) } })
   app.post<{ Body: { username?: unknown; email?: unknown; password?: unknown } }>('/v1/auth/register', async (request, reply) => {
@@ -155,7 +171,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       })
       setSession(reply, session); return reply.code(201).send({ user: publicUser(user) })
     } catch (cause) {
-      if (cause instanceof Error && ['AUTH_USERNAME_EXISTS', 'AUTH_EMAIL_EXISTS'].includes(cause.message)) return reply.code(409).send(error('AUTH_IDENTITY_EXISTS', '该用户名或邮箱暂不可用'))
+      if (cause instanceof Error && ['AUTH_USERNAME_EXISTS', 'AUTH_USERNAME_RESERVED', 'AUTH_EMAIL_EXISTS'].includes(cause.message)) return reply.code(409).send(error('AUTH_IDENTITY_EXISTS', '该用户名或邮箱暂不可用'))
       throw cause
     }
   })
@@ -185,6 +201,26 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     if (!await accounts.changePassword(user.id, currentPassword, nextPassword)) return reply.code(401).send(error('AUTH_CURRENT_PASSWORD_INVALID', '当前密码错误'))
     reply.header('Set-Cookie', 'dsh_session=; Path=/api/; HttpOnly; Secure; SameSite=Strict; Max-Age=0'); return { ok: true, reloginRequired: true }
   })
+  app.get('/v1/me/profile', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { profile: accounts.usernameProfile(user.id) }
+  })
+  app.patch<{ Body: { username?: unknown; currentPassword?: unknown } }>('/v1/me/profile', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { username, currentPassword } = request.body ?? {}
+    if (!validUsername(username) || typeof currentPassword !== 'string') return reply.code(400).send(error('AUTH_INVALID_USERNAME_CHANGE', '用户名须为 3–32 位，并以字母或数字开头'))
+    try {
+      const updated = await accounts.changeUsername(user.id, currentPassword, username, context(request))
+      return { user: publicUser(updated), profile: accounts.usernameProfile(user.id) }
+    } catch (cause) {
+      if (!(cause instanceof Error)) throw cause
+      if (cause.message === 'AUTH_CURRENT_PASSWORD_INVALID') return reply.code(401).send(error(cause.message, '当前密码错误'))
+      if (cause.message === 'AUTH_USERNAME_UNCHANGED') return reply.code(400).send(error(cause.message, '新账号名与当前账号名相同'))
+      if (['AUTH_USERNAME_EXISTS','AUTH_USERNAME_RESERVED'].includes(cause.message)) return reply.code(409).send(error('AUTH_USERNAME_UNAVAILABLE', '该账号名已被占用或仍在保留期'))
+      if (cause.message.startsWith('AUTH_USERNAME_COOLDOWN:')) return reply.code(409).send(error('AUTH_USERNAME_COOLDOWN', '账号名每 30 天只能修改一次', { nextChangeAt: cause.message.slice('AUTH_USERNAME_COOLDOWN:'.length) }))
+      throw cause
+    }
+  })
   app.get('/v1/me/sessions', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.sessions(user.id, sessionToken(request)) } })
   app.delete<{ Params: { id: string } }>('/v1/me/sessions/:id', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { ok: accounts.revokeSession(user.id, request.params.id) } })
   app.post('/v1/me/sessions/revoke-others', async (request, reply) => { const user = requireUser(request, reply); const token = sessionToken(request); if (user === undefined || token === undefined) return; return { revoked: accounts.revokeOtherSessions(user.id, token) } })
@@ -206,6 +242,28 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const state = accounts.pluginState(user.id, request.params.id)
     return state === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开')) : { state }
   })
+  app.get('/v1/me/notification-preferences', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { preferences: accounts.notificationPreferences(user.id) }
+  })
+  app.patch<{ Body: Partial<Record<keyof NotificationPreferences, unknown>> }>('/v1/me/notification-preferences', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const current = accounts.notificationPreferences(user.id); const body = request.body ?? {}
+    const keys: Array<keyof NotificationPreferences> = ['pluginUpdates','discussionReplies','collectionUpdates','platformReleases']
+    if (Object.keys(body).some(key => !keys.includes(key as keyof NotificationPreferences)) || keys.some(key => body[key] !== undefined && typeof body[key] !== 'boolean')) return reply.code(400).send(error('NOTIFICATION_PREFERENCES_INVALID', '通知偏好设置无效'))
+    const preferences = Object.fromEntries(keys.map(key => [key, body[key] ?? current[key]])) as unknown as NotificationPreferences
+    return { preferences: accounts.updateNotificationPreferences(user.id, preferences) }
+  })
+  app.get('/v1/me/saved-searches', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.savedSearches(user.id) } })
+  app.post<{ Body: { name?: unknown; query?: unknown } }>('/v1/me/saved-searches', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { name, query } = request.body ?? {}; const allowed = new Set(['q','kind','surface','topic','author','language','license','sort'])
+    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 60 || typeof query !== 'object' || query === null || Array.isArray(query)) return reply.code(400).send(error('SAVED_SEARCH_INVALID', '搜索名称或筛选条件无效'))
+    const entries = Object.entries(query as Record<string, unknown>)
+    if (entries.some(([key, value]) => !allowed.has(key) || typeof value !== 'string' || value.length > 200)) return reply.code(400).send(error('SAVED_SEARCH_INVALID', '筛选条件包含不支持的字段'))
+    return reply.code(201).send({ search: accounts.createSavedSearch(user.id, name.trim(), Object.fromEntries(entries) as Record<string, string>) })
+  })
+  app.delete<{ Params: { id: string } }>('/v1/me/saved-searches/:id', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { ok: accounts.deleteSavedSearch(user.id, request.params.id) } })
   app.get<{ Querystring: PageQuery }>('/v1/collections', async request => accounts.publicCollections({
     ...(request.query.q ? { q: request.query.q } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 20),
   }))
@@ -291,6 +349,17 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       throw cause
     }
   })
+  app.get<{ Params: { id: string } }>('/v1/me/discussions/:id/subscription', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    if (accounts.discussionThread(request.params.id) === undefined) return reply.code(404).send(error('DISCUSSION_NOT_FOUND', '讨论不存在或不可见'))
+    return { subscribed: accounts.discussionSubscription(user.id, request.params.id) }
+  })
+  app.put<{ Params: { id: string }; Body: { subscribed?: unknown } }>('/v1/me/discussions/:id/subscription', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    if (typeof request.body?.subscribed !== 'boolean') return reply.code(400).send(error('DISCUSSION_SUBSCRIPTION_INVALID', '关注状态无效'))
+    try { return { subscribed: accounts.setDiscussionSubscription(user.id, request.params.id, request.body.subscribed) } }
+    catch (cause) { if (cause instanceof Error && cause.message === 'DISCUSSION_NOT_FOUND') return reply.code(404).send(error('DISCUSSION_NOT_FOUND', '讨论不存在或不可见')); throw cause }
+  })
   app.delete<{ Params: { id: string } }>('/v1/discussion-replies/:id', async (request, reply) => {
     const user = requireUser(request, reply); if (user === undefined) return
     return { ok: await accounts.deleteDiscussionContent(user.id, 'reply', request.params.id) }
@@ -303,7 +372,11 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     try { return reply.code(201).send({ created: await accounts.createReport(user.id, targetType as 'thread' | 'reply' | 'review' | 'collection', targetId, reason.trim()) }) }
     catch (cause) { if (cause instanceof Error && cause.message === 'REPORT_TARGET_NOT_FOUND') return reply.code(404).send(error('REPORT_TARGET_NOT_FOUND', '举报目标不存在')); throw cause }
   })
-  app.get<{ Querystring: PageQuery }>('/v1/activity', async request => accounts.activityFeed({ page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) }))
+  app.get<{ Querystring: PageQuery }>('/v1/activity', async (request, reply) => {
+    const categories = ['plugin','platform','discussion','collection'] as const
+    if (request.query.category !== undefined && !categories.includes(request.query.category as typeof categories[number])) return reply.code(400).send(error('ACTIVITY_CATEGORY_INVALID', '动态分类无效'))
+    return accounts.activityFeed({ ...(request.query.category === undefined ? {} : { category: request.query.category as typeof categories[number] }), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
   app.get<{ Querystring: PageQuery }>('/v1/me/notifications', async (request, reply) => {
     const user = requireUser(request, reply); if (user === undefined) return
     return accounts.notifications(user.id, { page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
@@ -335,6 +408,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     } catch (cause) { if (cause instanceof Error && cause.message === 'ADMIN_LAST_ADMIN') return reply.code(409).send(error('ADMIN_LAST_ADMIN', '必须至少保留一名启用的管理员')); throw cause }
   })
   app.get<{ Params: { id: string } }>('/v1/admin/users/:id/sessions', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return { items: accounts.sessions(request.params.id) } })
+  app.get<{ Params: { id: string } }>('/v1/admin/users/:id/username-history', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; const profile = accounts.usernameProfile(request.params.id); return profile === undefined ? reply.code(404).send(error('ADMIN_USER_NOT_FOUND', '用户不存在')) : { profile } })
   app.delete<{ Params: { id: string; sessionId: string } }>('/v1/admin/users/:id/sessions/:sessionId', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return { ok: accounts.revokeSession(request.params.id, request.params.sessionId) } })
   app.get<{ Querystring: PageQuery }>('/v1/admin/plugins', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
@@ -347,6 +421,35 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     if (['hidden', 'rejected'].includes(String(status)) && (typeof reason !== 'string' || reason.trim().length < 3)) return reply.code(400).send(error('ADMIN_REASON_REQUIRED', '隐藏或拒绝时必须填写原因'))
     const updated = await accounts.moderatePlugin(admin.id, request.params.id, { ...(typeof revisionId === 'string' ? { revisionId } : {}), ...(status === undefined ? {} : { status: status as ModerationStatus }), ...(featured === undefined ? {} : { featured }), ...(typeof reason === 'string' ? { reason: reason.trim() } : {}) }, context(request))
     return updated ? { ok: true } : reply.code(404).send(error('ADMIN_PLUGIN_NOT_FOUND', '插件或 revision 不存在'))
+  })
+  app.get<{ Params: { id: string; revisionId: string } }>('/v1/admin/plugins/:id/revisions/:revisionId', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    const revision = accounts.pluginRevision(request.params.id, request.params.revisionId, true)
+    return revision === undefined ? reply.code(404).send(error('CATALOG_REVISION_NOT_FOUND', '插件版本不存在')) : { revision }
+  })
+  app.patch<{ Params: { id: string; revisionId: string }; Body: { title?: unknown; summary?: unknown; changes?: unknown; breakingChanges?: unknown; sourceUrl?: unknown } }>('/v1/admin/plugins/:id/revisions/:revisionId/changelog', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { title, summary, changes, breakingChanges, sourceUrl } = request.body ?? {}
+    const validChanges = Array.isArray(changes) && changes.every(item => typeof item === 'object' && item !== null && !Array.isArray(item) && ['added','changed','fixed','removed','security','other'].includes(String((item as Record<string, unknown>).type)) && typeof (item as Record<string, unknown>).text === 'string')
+    if (typeof title !== 'string' || title.trim().length < 2 || title.trim().length > 180 || typeof summary !== 'string' || summary.trim().length < 2 || summary.trim().length > 800 || !validChanges || changes.length > 40 || !Array.isArray(breakingChanges) || !breakingChanges.every(item => typeof item === 'string' && item.length <= 400) || breakingChanges.length > 12 || (sourceUrl !== undefined && !validGitHubUrl(sourceUrl))) return reply.code(400).send(error('CHANGELOG_INVALID', '更新日志内容或来源地址无效'))
+    const release = accounts.updateRevisionChange(admin.id, request.params.id, request.params.revisionId, {
+      title: title.trim(), summary: summary.trim(), changes: (changes as RevisionChangeItem[]).map(item => ({ ...item, text: item.text.trim().slice(0, 400) })),
+      breakingChanges: (breakingChanges as string[]).map(item => item.trim()).filter(Boolean), ...(typeof sourceUrl === 'string' ? { sourceUrl } : {}),
+    }, context(request))
+    return release === undefined ? reply.code(404).send(error('CATALOG_REVISION_NOT_FOUND', '插件版本不存在')) : { release }
+  })
+  app.post<{ Params: { id: string; revisionId: string } }>('/v1/admin/plugins/:id/revisions/:revisionId/changelog/retry', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const revision = accounts.pluginRevision(request.params.id, request.params.revisionId, true)
+    if (revision === undefined) return reply.code(404).send(error('CATALOG_REVISION_NOT_FOUND', '插件版本不存在'))
+    if (!accounts.allowAuthAttempt(`changelog:retry:${admin.id}`, 10, 10 * 60_000, 10 * 60_000)) return reply.code(429).send(error('CHANGELOG_RETRY_RATE_LIMITED', '更新日志重新采集过于频繁'))
+    try {
+      const notes = await collectGitHubReleaseNotes(revision.record, options.githubToken)
+      return { release: accounts.refreshRevisionChange(admin.id, request.params.id, request.params.revisionId, notes, context(request)) }
+    } catch (cause) {
+      request.log.warn({ cause, pluginId: request.params.id, revisionId: request.params.revisionId }, 'changelog refresh failed')
+      return reply.code(502).send(error('CHANGELOG_REFRESH_FAILED', '无法从 GitHub 重新采集更新日志'))
+    }
   })
   app.post('/v1/admin/sync-runs', async (request, reply) => {
     const admin = requireAdmin(request, reply); if (admin === undefined) return
