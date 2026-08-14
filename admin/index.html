@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>管理控制台 · DSH Creative Workshop</title>
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="/">
+        <img src="/assets/scheme-b-cyber-harness.svg" alt="">
+        <span><strong>DSH WORKSHOP</strong><small>CONTROL PLANE</small></span>
+      </a>
+      <nav aria-label="管理功能">
+        <button class="active" data-view="overview"><span>01</span>运行总览</button>
+        <button data-view="plugins"><span>02</span>插件审核</button>
+        <button data-view="sync"><span>03</span>目录同步</button>
+        <button data-view="users"><span>04</span>用户管理</button>
+        <button data-view="audit"><span>05</span>审计日志</button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="health" id="healthStatus"><i></i> API 检测中</span>
+        <a href="/">← 返回创意工坊</a>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header>
+        <div><p>ADMINISTRATION</p><h1 id="viewTitle">运行总览</h1></div>
+        <div class="account"><span id="adminIdentity">正在验证权限…</span><button id="logoutButton">退出</button></div>
+      </header>
+
+      <main id="mainContent" tabindex="-1">
+        <section class="loading-screen"><span></span><p>正在加载控制平面数据</p></section>
+      </main>
+    </div>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <dialog id="confirmDialog">
+    <form method="dialog">
+      <p class="dialog-kicker">REVIEW REQUIRED</p>
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmBody"></p>
+      <label id="reasonField" hidden>操作原因<textarea id="confirmReason" maxlength="500" placeholder="请填写可追溯的审核原因"></textarea></label>
+      <div class="dialog-actions"><button value="cancel">取消</button><button class="danger" id="confirmSubmit" value="confirm">确认执行</button></div>
+    </form>
+  </dialog>
+  <script type="module" src="/admin/admin.js"></script>
+</body>
+</html>

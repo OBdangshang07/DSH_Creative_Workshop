@@ -11,6 +11,7 @@ Environment=NODE_ENV=production
 Environment=WORKSHOP_API_HOST=127.0.0.1
 Environment=WORKSHOP_API_PORT=4100
 Environment=WORKSHOP_ALLOWED_ORIGINS=https://xxnmkk.xyz,https://www.xxnmkk.xyz
+Environment=WORKSHOP_DATABASE_FILE=/var/lib/dsh-workshop/workshop.sqlite
 Environment=WORKSHOP_DATA_FILE=/var/lib/dsh-workshop/data.json
 EnvironmentFile=-/etc/dsh-workshop/api.env
 ExecStart=/usr/bin/node /opt/dsh-creative-workshop/apps/api/dist/server.js

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>账号登录 · DSH Creative Workshop</title>
+  <link rel="stylesheet" href="/login/login.css">
+  <style>[hidden]{display:none!important}</style>
+</head>
+<body>
+  <main class="auth-shell">
+    <a class="brand" href="/" aria-label="返回 DSH Creative Workshop">
+      <img src="/assets/scheme-b-cyber-harness.svg" alt="">
+      <span><strong>DSH</strong><small>CREATIVE WORKSHOP</small></span>
+    </a>
+
+    <section class="auth-card" aria-labelledby="pageTitle">
+      <div class="auth-intro">
+        <p class="eyebrow">WORKSHOP ACCOUNT</p>
+        <h1 id="pageTitle">继续进入创意工坊</h1>
+        <p>使用同一账号收藏、订阅与整理 DeepSeek Harness Bundle。管理员登录后可进入独立控制台。</p>
+        <ul>
+          <li><span>01</span> 会话使用 HttpOnly 安全 Cookie</li>
+          <li><span>02</span> 密码只保存为单向 Scrypt 哈希</li>
+          <li><span>03</span> 多设备会话可单独撤销</li>
+        </ul>
+      </div>
+
+      <div class="auth-panel">
+        <div class="tabs" role="tablist" aria-label="账号操作">
+          <button id="loginTab" role="tab" aria-selected="true" data-mode="login">登录</button>
+          <button id="registerTab" role="tab" aria-selected="false" data-mode="register">创建账号</button>
+        </div>
+
+        <form id="authForm" novalidate>
+          <div class="register-fields" hidden>
+            <label for="username">用户名</label>
+            <input id="username" name="username" autocomplete="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" placeholder="3–32 位字母、数字或 . _ -">
+            <p class="field-error" id="usernameError"></p>
+
+            <label for="email">邮箱</label>
+            <input id="email" name="email" type="email" autocomplete="email" maxlength="254" placeholder="name@example.com">
+            <p class="field-error" id="emailError"></p>
+          </div>
+
+          <div class="login-fields">
+            <label for="identity">用户名或邮箱</label>
+            <input id="identity" name="identity" autocomplete="username" placeholder="请输入用户名或邮箱">
+            <p class="field-error" id="identityError"></p>
+          </div>
+
+          <label for="password">密码</label>
+          <div class="password-wrap">
+            <input id="password" name="password" type="password" autocomplete="current-password" minlength="10" maxlength="128" placeholder="请输入密码">
+            <button id="passwordToggle" type="button" aria-label="显示密码">显示</button>
+          </div>
+          <div class="strength" id="passwordStrength" hidden><span></span><span></span><span></span><span></span><em>至少 10 位，包含字母和数字</em></div>
+          <p class="field-error" id="passwordError"></p>
+
+          <div class="form-message" id="formMessage" role="status" aria-live="polite"></div>
+          <button class="submit" id="submitButton" type="submit"><span>登录</span><i aria-hidden="true"></i></button>
+        </form>
+
+        <p class="legal">创建账号即表示你同意遵守社区审核规则。工坊的结构验证不等同于官方认证或安全审计。</p>
+      </div>
+    </section>
+    <a class="back" href="/">← 返回工坊</a>
+  </main>
+  <script type="module" src="/login/login.js"></script>
+</body>
+</html>
