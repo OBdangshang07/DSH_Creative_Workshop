@@ -202,7 +202,8 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       updatedAt: typeof repository.updated_at === 'string' ? repository.updated_at : repository.pushed_at as string,
       pushedAt: repository.pushed_at as string,
       topics: Array.isArray(repository.topics) ? repository.topics.filter((topic): topic is string => typeof topic === 'string') : [],
-      kind, surfaces: surfacesFor(manifest, kind), source: 'github-topic', securityReviewed: false, verification,
+      kind, surfaces: surfacesFor(manifest, kind), declaredDependencies: [...dependencies].sort(), dshDependencies: dshDependencies.sort(),
+      source: 'github-topic', securityReviewed: false, verification,
     })
   }
   if (plugins.length === 0) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'rejected', reason: failures[0]?.reason ?? 'DSH_BUNDLE_NOT_FOUND', evidence: { packageCount: packagePaths.length, failures } }

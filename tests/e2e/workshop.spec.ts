@@ -1,0 +1,67 @@
+import { expect, test } from '@playwright/test'
+
+test('card opens an internal, reload-safe detail page with an explicit GitHub handoff', async ({ page }) => {
+  await page.goto('/')
+  const card = page.locator('.dsh-card').first()
+  await expect(card).toBeVisible()
+  const title = await card.locator('.dsh-card-title').textContent()
+  await card.focus()
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/plugin\/\?id=/)
+  await expect(page.locator('.dsh-detail-summary h1')).toHaveText(title || '')
+  const github = page.getByRole('link', { name: /前往 GitHub/ })
+  await expect(github).toHaveAttribute('target', '_blank')
+  await expect(github).toHaveAttribute('rel', /noopener/)
+  await page.reload()
+  await expect(page.locator('.dsh-detail-summary h1')).toHaveText(title || '')
+  await page.goBack()
+  await expect(page).toHaveURL(/127\.0\.0\.1:4273\/$/)
+})
+
+test('login returns to the plugin and enables persisted user actions', async ({ page }) => {
+  await page.goto('/')
+  await page.locator('.dsh-card').first().click()
+  const detailUrl = page.url()
+  await page.getByRole('button', { name: /^收藏$/ }).click()
+  await expect(page).toHaveURL(/\/login\//)
+  await page.locator('#identity').fill('browser-user')
+  await page.locator('#password').fill('BrowserPassword123')
+  await page.locator('#authForm').getByRole('button', { name: '登录' }).click()
+  await expect(page).toHaveURL(detailUrl)
+  await page.getByRole('button', { name: /^收藏$/ }).click()
+  await expect(page.getByRole('button', { name: '已收藏' })).toBeVisible()
+
+  await page.locator('#reviewForm textarea').fill('在当前公开 Revision 上完成了真实浏览器验证。')
+  await page.locator('#reviewForm').getByRole('button', { name: '发布评价' }).click()
+  await expect(page.locator('.dsh-review-list')).toContainText('真实浏览器验证')
+
+  await page.getByRole('button', { name: '加入合集' }).click()
+  await page.locator('#quickCollectionForm input[name="name"]').fill('浏览器测试合集')
+  await page.locator('#quickCollectionForm').getByRole('button', { name: '创建合集' }).click()
+  await expect(page.locator('.dsh-dialog.open')).toHaveCount(0)
+
+  await page.locator('#dshAccountButton').click()
+  await page.getByRole('button', { name: '设备会话' }).click()
+  await expect(page.locator('#dshDialogBody')).toContainText('当前会话')
+})
+
+test('catalog search and real facets are reflected in the URL', async ({ page }) => {
+  await page.goto('/')
+  const firstTitle = await page.locator('.dsh-card-title').first().textContent()
+  await page.locator('input[name="q"]').fill(firstTitle || '')
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  await expect(page).toHaveURL(/\?q=/)
+  await expect(page.locator('.dsh-card')).toHaveCount(1)
+  await page.locator('select[name="surface"]').selectOption({ index: 1 })
+  await page.getByRole('button', { name: '应用筛选' }).click()
+  await expect(page).toHaveURL(/surface=/)
+})
+
+test('catalog and detail remain usable on a narrow mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await expect(page.locator('.dsh-card').first()).toBeVisible()
+  await page.locator('.dsh-card').first().click()
+  await expect(page.getByRole('link', { name: /前往 GitHub/ })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+})

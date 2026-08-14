@@ -31,9 +31,36 @@ describe('SQLite account and catalog store', () => {
     const database = new DatabaseSync(databaseFile, { readOnly: true })
     expect(database.prepare('PRAGMA journal_mode').get()).toMatchObject({ journal_mode: 'wal' })
     expect(database.prepare('PRAGMA foreign_keys').get()).toMatchObject({ foreign_keys: 1 })
-    expect(database.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }])
+    expect(database.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }, { version: 2 }])
     expect(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get()).toMatchObject({ count: 15 })
     database.close()
+  })
+
+  it('migrates legacy plugin-level reviews onto the published revision', async () => {
+    const databaseFile = await temporaryPath('legacy-reviews.sqlite')
+    const plugin = bundle('github.community.legacy-review', 'legacy-review-sha')
+    const revisionId = `${plugin.id}@${plugin.verification.commitSha}:${plugin.verification.packageJsonPath}`
+    const database = new DatabaseSync(databaseFile)
+    database.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE users(id TEXT PRIMARY KEY,username TEXT NOT NULL,email TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL,last_login_at TEXT);
+      CREATE TABLE plugins(id TEXT PRIMARY KEY,full_name TEXT NOT NULL,package_path TEXT NOT NULL,latest_revision_id TEXT,published_revision_id TEXT,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(full_name,package_path));
+      CREATE TABLE plugin_revisions(id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,commit_sha TEXT NOT NULL,package_json_path TEXT NOT NULL,patch_path TEXT NOT NULL,record_json TEXT NOT NULL,verification_json TEXT NOT NULL,verified_at TEXT NOT NULL,UNIQUE(plugin_id,commit_sha,package_json_path));
+      CREATE TABLE reviews(id TEXT PRIMARY KEY,plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,author_name TEXT NOT NULL,rating INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(plugin_id,author_id));
+    `)
+    database.prepare('INSERT INTO users VALUES(?,?,?,?,?,?,?,?)').run('usr_legacy_review', 'legacy-reviewer', 'legacy-review@example.test', 'scrypt$00$00', 'user', 'active', '2026-01-01T00:00:00Z', null)
+    database.prepare('INSERT INTO plugins VALUES(?,?,?,?,?,?,?)').run(plugin.id, plugin.fullName, '.', revisionId, revisionId, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+    database.prepare('INSERT INTO plugin_revisions VALUES(?,?,?,?,?,?,?,?)').run(revisionId, plugin.id, plugin.verification.commitSha, plugin.verification.packageJsonPath, plugin.verification.patchPath, JSON.stringify(plugin), JSON.stringify(plugin.verification), plugin.verification.checkedAt)
+    database.prepare('INSERT INTO reviews VALUES(?,?,?,?,?,?,?)').run('review_legacy', plugin.id, 'usr_legacy_review', 'legacy-reviewer', 4, 'Legacy review body', '2026-01-02T00:00:00Z')
+    database.close()
+
+    const store = new AccountStore(databaseFile)
+    await store.initialize()
+    store.close()
+    const migrated = new DatabaseSync(databaseFile, { readOnly: true })
+    expect((migrated.prepare('PRAGMA table_info(reviews)').all() as Array<{ name: string }>).map(column => column.name)).toContain('revision_id')
+    expect(migrated.prepare('SELECT revision_id,created_at,updated_at FROM reviews').get()).toEqual({ revision_id: revisionId, created_at: '2026-01-02T00:00:00Z', updated_at: '2026-01-02T00:00:00Z' })
+    migrated.close()
   })
 
   it('migrates legacy JSON once and creates a byte-for-byte backup', async () => {

@@ -1,13 +1,16 @@
 {
   "name": "dsh-creative-workshop",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "description": "DeepSeek Harness Creative Workshop - Marketplace API, Companion and Steam-style web UI",
   "type": "module",
   "scripts": {
     "build": "pnpm -r --if-present build",
-    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm check:version && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
+    "check:version": "node scripts/check-version.mjs",
     "typecheck": "pnpm -r --if-present typecheck",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "preview:web": "node scripts/preview.mjs",
     "start": "node server/index.js",
     "start:api": "pnpm --filter @dsh-workshop/api start",
     "start:companion": "pnpm --filter @dsh-workshop/companion start",
@@ -16,7 +19,13 @@
     "companion:legacy": "node server/index.js --companion-only",
     "validate:manifest": "tsx scripts/validate-manifest.ts"
   },
-  "keywords": ["deepseek-harness", "cordis", "workshop", "companion", "agent"],
+  "keywords": [
+    "deepseek-harness",
+    "cordis",
+    "workshop",
+    "companion",
+    "agent"
+  ],
   "license": "MIT",
   "packageManager": "pnpm@11.21.0",
   "engines": {
@@ -24,6 +33,7 @@
   },
   "devDependencies": {
     "@dsh-workshop/manifest": "workspace:*",
+    "@playwright/test": "1.55.0",
     "@types/node": "^22.19.0",
     "esbuild": "^0.28.2",
     "tsx": "^4.22.4",

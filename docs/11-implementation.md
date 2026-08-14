@@ -12,7 +12,10 @@
 apps/
   api/          Marketplace HTTP API（默认 127.0.0.1:4100）
   companion/    本机探测、计划和 dry-run 操作（默认 127.0.0.1:4101）
-  web/          React/Vite 简易前端（默认 127.0.0.1:5173）
+assets/         生产商店视觉资源
+js/             无构建依赖的生产浏览器模块
+login/          独立登录/注册页面
+admin/          独立管理控制台
 packages/
   domain/       领域类型和风险规则
   manifest/     JSON Schema/Ajv 清单校验
@@ -34,8 +37,15 @@ POST /v1/plugins/:id/reviews
 POST /v1/auth/register
 POST /v1/auth/login
 GET  /v1/me/sessions
+GET  /v1/me/favorites
+GET  /v1/me/subscriptions
+GET  /v1/me/plugins/:id/state
 POST /v1/me/favorites/:id/toggle
 POST /v1/me/subscriptions/:id/toggle
+GET  /v1/me/collections
+POST /v1/me/collections
+PATCH /v1/me/collections/:id
+DELETE /v1/me/collections/:id
 GET  /v1/admin/overview
 GET  /v1/admin/plugins
 PATCH /v1/admin/plugins/:id
@@ -45,7 +55,7 @@ GET  /v1/admin/users
 GET  /v1/admin/audit
 ```
 
-公开目录支持名称/描述搜索和 Bundle 类型筛选；管理端额外支持审核状态、用户角色/状态、审计操作和分页。社区评价要求登录，同一用户对同一插件只保留一条最新评价。收藏、订阅、合集和评价都只能引用当前公开插件。
+公开目录支持名称、描述、包名搜索，以及 kind、surface、topic、author、language、license 分面、排序和分页。管理端额外支持审核状态、用户角色/状态、审计操作和分页。社区评价要求登录，并由服务端绑定当前公开 Revision；同一用户对同一 Revision 只保留一条最新评价。收藏、订阅、合集和评价都只能引用当前公开插件。
 
 ## 4. Local Companion
 
@@ -80,8 +90,11 @@ GET  /v1/operations/:id/events
 ## 5. 浏览器前端
 
 - `/`：保留既有商店视觉与布局，卡片只映射经过验证并审核通过的真实 Bundle。
+- `/plugin/?id=...`：站内插件二级详情，展示标准字段、固定 Commit 证据、声明依赖、动态社区数据和明确的 GitHub 外链。
 - `/login/`：独立登录/注册、字段级错误、密码强度、提交状态和仅站内的 `returnTo`。
 - `/admin/`：独立管理控制台，包含目录治理统计、revision 证据、异步同步任务与候选失败原因、用户/Session 管理和带请求上下文的审计日志。
+
+普通用户中心提供收藏/订阅列表、合集创建/编辑/删除、当前插件加入合集、设备 Session 撤销和修改密码。首页、详情和用户中心不再保留“仅弹出成功提示”的模拟操作。
 
 ## 6. 验证
 
@@ -90,9 +103,10 @@ corepack pnpm validate:manifest
 corepack pnpm typecheck
 corepack pnpm test
 corepack pnpm build
+corepack pnpm test:e2e
 ```
 
-自动化测试覆盖清单、风险、组合搜索、撤回过滤、图投影、合集顺序、评价权重、API 合同、稳定错误码、环境解析、Companion token/Origin、命令字段拒绝、profile traversal、依赖计划、幂等操作和 dry-run 回执。
+自动化测试覆盖清单、风险、组合搜索、撤回过滤、图投影、合集顺序、Revision 评价迁移、API 合同、稳定错误码、环境解析、Companion token/Origin、命令字段拒绝、profile traversal、依赖计划、幂等操作和 dry-run 回执；Playwright 额外覆盖卡片到详情、刷新/后退、登录回跳、用户持久化操作、真实筛选和移动端布局。
 
 ## 7. 尚未实现
 

@@ -1,9 +1,10 @@
 import cors from '@fastify/cors'
 import { randomUUID } from 'node:crypto'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
-import { AccountStore, publicUser, type BootstrapAdmin, type ModerationStatus, type UserRole, type UserStatus } from './auth-store.js'
+import { AccountStore, publicUser, type BootstrapAdmin, type CatalogQuery, type ModerationStatus, type UserRole, type UserStatus } from './auth-store.js'
 import { githubSeed } from './github-seed.js'
 import { CatalogSyncService } from './sync-service.js'
+import { APP_VERSION } from './version.js'
 
 interface ApiOptions {
   allowedOrigins?: readonly string[]
@@ -15,7 +16,11 @@ interface ApiOptions {
   logger?: boolean
 }
 
-interface PageQuery { q?: string; role?: string; status?: string; kind?: string; action?: string; page?: string; pageSize?: string }
+interface PageQuery {
+  q?: string; role?: string; status?: string; kind?: string; action?: string
+  surface?: string; topic?: string; author?: string; language?: string; license?: string; sort?: string
+  page?: string; pageSize?: string
+}
 
 const error = (code: string, message: string, details: Record<string, unknown> = {}) => ({ error: { code, message, details } })
 
@@ -32,6 +37,8 @@ function validUsername(value: unknown): value is string { return typeof value ==
 function validEmail(value: unknown): value is string { return typeof value === 'string' && value.length <= 254 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) }
 function validPassword(value: unknown): value is string { return typeof value === 'string' && value.length >= 10 && value.length <= 128 && /[A-Za-z]/.test(value) && /\d/.test(value) }
 function pageNumber(value: string | undefined, fallback: number): number { const parsed = Number.parseInt(value ?? '', 10); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback }
+const catalogSorts = new Set<NonNullable<CatalogQuery['sort']>>(['stars', 'recent', 'name', 'rating', 'subscriptions'])
+function catalogSort(value: string | undefined): CatalogQuery['sort'] { return value !== undefined && catalogSorts.has(value as NonNullable<CatalogQuery['sort']>) ? value as NonNullable<CatalogQuery['sort']> : undefined }
 
 export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstance> {
   const allowedOrigins = new Set(options.allowedOrigins ?? ['http://localhost:5173', 'http://127.0.0.1:5173'])
@@ -77,14 +84,28 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     'Set-Cookie', `dsh_session=${encodeURIComponent(session.token)}; Path=/api/; HttpOnly; Secure; SameSite=Strict; Expires=${new Date(session.expiresAt).toUTCString()}`,
   )
 
-  app.get('/health', async () => ({ ok: true, service: 'marketplace-api' }))
-  app.get('/health/live', async () => ({ ok: true }))
-  app.get('/health/ready', async () => ({ ok: true, storage: 'sqlite-wal', catalog: accounts.summary().plugins }))
+  app.get('/health', async () => ({ ok: true, service: 'marketplace-api', version: APP_VERSION }))
+  app.get('/health/live', async () => ({ ok: true, version: APP_VERSION }))
+  app.get('/health/ready', async () => ({ ok: true, version: APP_VERSION, storage: 'sqlite-wal', catalog: accounts.summary().plugins }))
 
   const publicCatalog = async (request: FastifyRequest<{ Querystring: PageQuery }>) => {
     const q = request.query.q?.trim()
     const kind = request.query.kind?.trim()
-    const snapshot = accounts.githubSnapshot(false, { ...(q ? { q } : {}), ...(kind && kind !== 'all' ? { kind } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 100) })
+    const optional = (value: string | undefined) => value?.trim() || undefined
+    const sort = catalogSort(request.query.sort)
+    const surface = optional(request.query.surface)
+    const topic = optional(request.query.topic)
+    const author = optional(request.query.author)
+    const language = optional(request.query.language)
+    const license = optional(request.query.license)
+    const snapshot = accounts.githubSnapshot(false, {
+      ...(q ? { q } : {}), ...(kind && kind !== 'all' ? { kind } : {}),
+      ...(surface === undefined ? {} : { surface }), ...(topic === undefined ? {} : { topic }),
+      ...(author === undefined ? {} : { author }), ...(language === undefined ? {} : { language }),
+      ...(license === undefined ? {} : { license }),
+      ...(sort === undefined ? {} : { sort }),
+      page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 100),
+    })
     return {
       source: 'https://github.com/topics/dsh-plugin',
       verificationNotice: '仅展示已验证包含 dsh.bundle.patch 且引用的 Cordis patch 存在并可解析的 DeepSeek Harness Bundle。',
@@ -155,6 +176,15 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       throw cause
     }
   })
+  for (const relation of ['favorites', 'subscriptions'] as const) app.get<{ Querystring: PageQuery }>(`/v1/me/${relation}`, async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return accounts.userRelations(user.id, relation, { page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.get<{ Params: { id: string } }>('/v1/me/plugins/:id/state', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const state = accounts.pluginState(user.id, request.params.id)
+    return state === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开')) : { state }
+  })
   app.get('/v1/me/collections', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.userCollections(user.id) } })
   app.post<{ Body: { name?: unknown; description?: unknown; pluginIds?: unknown } }>('/v1/me/collections', async (request, reply) => {
     const user = requireUser(request, reply); if (user === undefined) return
@@ -162,14 +192,20 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string')) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明或插件列表无效'))
     return reply.code(201).send({ collection: await accounts.createCollection(user.id, name.trim(), description.trim(), pluginIds as string[]) })
   })
+  app.patch<{ Params: { id: string }; Body: { name?: unknown; description?: unknown; pluginIds?: unknown } }>('/v1/me/collections/:id', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { name, description, pluginIds } = request.body ?? {}
+    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string')) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明或插件列表无效'))
+    const collection = await accounts.updateCollection(user.id, request.params.id, { name: name.trim(), description: description.trim(), pluginIds: pluginIds as string[] })
+    return collection === undefined ? reply.code(404).send(error('COLLECTION_NOT_FOUND', '合集不存在')) : { collection }
+  })
   app.delete<{ Params: { id: string } }>('/v1/me/collections/:id', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { ok: await accounts.deleteCollection(user.id, request.params.id) } })
-  const listReviews = async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
-    if (accounts.publicPlugin(request.params.id) === undefined) return reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开'))
-    const items = accounts.reviews(request.params.id)
-    return { summary: { count: items.length, score: items.length === 0 ? 0 : Math.round(items.reduce((sum, review) => sum + review.rating, 0) / items.length * 10) / 10 }, items }
+  const listReviews = async (request: FastifyRequest<{ Params: { id: string }; Querystring: PageQuery }>, reply: FastifyReply) => {
+    const reviews = accounts.reviews(request.params.id, { page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 20) })
+    return reviews === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开')) : reviews
   }
-  app.get<{ Params: { id: string } }>('/v1/plugins/:id/reviews', listReviews)
-  app.get<{ Params: { id: string } }>('/v1/github-plugins/:id/reviews', listReviews)
+  app.get<{ Params: { id: string }; Querystring: PageQuery }>('/v1/plugins/:id/reviews', listReviews)
+  app.get<{ Params: { id: string }; Querystring: PageQuery }>('/v1/github-plugins/:id/reviews', listReviews)
   const addReview = async (request: FastifyRequest<{ Params: { id: string }; Body: { rating?: unknown; body?: unknown } }>, reply: FastifyReply) => {
     const user = requireUser(request, reply); if (user === undefined) return
     const { rating, body } = request.body ?? {}
