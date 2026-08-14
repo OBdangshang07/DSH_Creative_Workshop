@@ -7,6 +7,8 @@ dist/
 lib/
 coverage/
 *.log
+.visual-check/
+.edge-profile/
 .env
 .env.*
 !.env.example

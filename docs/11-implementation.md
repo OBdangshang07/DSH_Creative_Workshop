@@ -4,7 +4,7 @@
 
 本实现把规划中的高价值闭环落成一个模块化 TypeScript monorepo：用户可从浏览器发现和比较插件，查看标准化权限、证据、评价与关系，选择精确版本，并向本机 Companion 请求一个可审阅的安装计划。当前操作执行到可审计的 dry-run 回执为止，不修改真实 DSH profile。
 
-固定示例数据用于离线演示和自动化测试。它们不从网络动态抓取，也不是对任何真实插件的发布、验证或安全背书。
+生产目录通过 GitHub `dsh-plugin` Topic 发现候选，但 Topic 本身不构成收录资格。API 固定仓库 commit，扫描 monorepo 中的 `package.json`，验证 `dsh.bundle.patch`、Cordis entry 结构和 DSH/Cordis 依赖证据；新 revision 必须经管理员人工审核后才能公开。结构验证仍不代表官方认证或安全审计。
 
 ## 2. 代码结构
 
@@ -19,31 +19,33 @@ packages/
   catalog/      Repository 接口、种子数据、搜索、图、合集和评价聚合
 ```
 
-MVP 的 `InMemoryCatalogRepository` 是 PostgreSQL repository 的替换点。搜索与图投影是纯领域服务，未来可换为 PostgreSQL FTS/OpenSearch 和持久化图投影，而不改变网页或 Companion 的领域协议。
+当前生产账号与目录数据层使用 Node.js 内置 SQLite、WAL、外键约束和迁移表。首次部署会将旧 `/var/lib/dsh-workshop/data.json` 导入 `workshop.sqlite`，并保留 `.pre-sqlite-backup` 原始备份。演示领域包中的 `InMemoryCatalogRepository` 仍供早期协议测试使用，不再是生产目录事实来源。
 
 ## 3. Marketplace API
 
-实现的核心接口：
+当前生产核心接口：
 
 ```text
 GET  /health
-GET  /v1/catalog
 GET  /v1/plugins
 GET  /v1/plugins/:id
-GET  /v1/plugins/:id/versions
-GET  /v1/plugin-versions/:id
-GET  /v1/plugin-versions/:id/evidence
-GET  /v1/plugins/:id/graph
-GET  /v1/collections
-GET  /v1/collections/:id
-GET  /v1/plugin-versions/:id/reviews
-POST /v1/plugin-versions/:id/reviews
-POST /v1/resolve
+GET  /v1/plugins/:id/reviews
+POST /v1/plugins/:id/reviews
+POST /v1/auth/register
+POST /v1/auth/login
+GET  /v1/me/sessions
+POST /v1/me/favorites/:id/toggle
+POST /v1/me/subscriptions/:id/toggle
+GET  /v1/admin/overview
+GET  /v1/admin/plugins
+PATCH /v1/admin/plugins/:id
+POST /v1/admin/sync-runs
+GET  /v1/admin/sync-runs/:id
+GET  /v1/admin/users
+GET  /v1/admin/audit
 ```
 
-搜索可组合 `q`、`tags`、`kind`、`os`、`surface`、`maxRisk` 和 `sort`。响应带 `catalogRevision`；命中项包含选择版本、匹配原因、风险和警告。
-
-公开评价写入绑定精确 `pluginVersionId`，要求五个 1–5 分维度。客户端不能自行声称安装回执，因此公开写入始终是 `receiptBacked: false`。聚合时回执评价权重更高，并提供 Wilson 置信下界。完整的身份、审核和反滥用仍是后续工作。
+公开目录支持名称/描述搜索和 Bundle 类型筛选；管理端额外支持审核状态、用户角色/状态、审计操作和分页。社区评价要求登录，同一用户对同一插件只保留一条最新评价。收藏、订阅、合集和评价都只能引用当前公开插件。
 
 ## 4. Local Companion
 
@@ -75,17 +77,11 @@ GET  /v1/operations/:id
 GET  /v1/operations/:id/events
 ```
 
-## 5. 简易前端
+## 5. 浏览器前端
 
-网页用于验证信息和交互闭环，而不是最终 UI 稿。它提供：
-
-- 搜索、受控标签、风险上限和可信度/评分/时间排序；
-- 插件卡片和标准化版本、评分、权限域摘要；
-- 详情抽屉中的权限、兼容性、证据、动态评价与 SVG 关系图；
-- 固定版本、角色与安装顺序的合集页面；
-- Companion 在线检测；
-- profile 与会话级 token 输入；
-- 一键生成计划、审阅变更并确认 dry-run 回执。
+- `/`：保留既有商店视觉与布局，卡片只映射经过验证并审核通过的真实 Bundle。
+- `/login/`：独立登录/注册、字段级错误、密码强度、提交状态和仅站内的 `returnTo`。
+- `/admin/`：独立管理控制台，包含目录治理统计、revision 证据、异步同步任务与候选失败原因、用户/Session 管理和带请求上下文的审计日志。
 
 ## 6. 验证
 
@@ -102,9 +98,10 @@ corepack pnpm build
 
 以下内容没有被 dry-run 冒充为已完成：
 
-- GitHub/npm ingestion、作者 claim 和真实插件审核；
-- PostgreSQL、对象存储、搜索集群和持久化事件；
-- OAuth、moderation、举报、申诉和完整反滥用；
+- npm 独立采集、作者 claim 与所有权验证；
+- OAuth、邮箱验证、找回密码、举报和申诉；
+- 隔离的代码级安全分析和动态沙箱；
+- 大规模目录需要的独立搜索服务与对象存储；
 - 隔离的 L3/L4 verification worker；
 - 真实 `dsh plugin` adapter；
 - profile 文件事务日志、锁、快照、故障恢复、健康检查和真实回滚；

@@ -2,7 +2,7 @@
 
 面向 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 插件生态的“创意工坊”式发现、评估、组合与安装平台规划。
 
-> 产品与工程基线见 `docs/01`–`10`。浏览器工坊的页面、交互与视觉规划见 [`docs/11-ui-design-plan.md`](docs/11-ui-design-plan.md)。前端实现尚未开始。
+> 产品与工程基线见 `docs/01`–`10`。浏览器工坊、独立账号页与管理控制台已经部署；实现边界与运维说明见 [`docs/11-implementation.md`](docs/11-implementation.md)。
 
 ## 当前结论
 
@@ -65,9 +65,15 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 - 不把 GitHub star、下载量或一次静态扫描包装成“安全认证”。
 - 不把 UI 规划当成可以改写安装事务、评价绑定或安全模型的许可。
 
-## 项目状态
+## 当前实现
 
-`Planning / Architecture Baseline + UI Plan`。工程实现仍按 [实施路线图](docs/09-roadmap.md) 推进；界面进入线框与原型前，以 [UI 设计项目规划](docs/11-ui-design-plan.md) 为评审输入。
+- 静态商店前端保持既有信息架构与视觉，目录数据来自 Marketplace API。
+- 独立 `/login/` 提供登录、注册、密码规则提示和安全站内回跳。
+- 独立 `/admin/` 提供总览、插件 revision 审核、异步 GitHub 同步、用户/Session 管理和审计日志。
+- API 使用 SQLite WAL 持久化用户、Session、目录、审核、社区关系、同步任务和审计数据，并可从旧版 JSON 自动迁移。
+- GitHub `dsh-plugin` Topic 只作为候选发现源；目录固定 commit，检查 `package.json → dsh.bundle.patch → Cordis patch`，且新 revision 默认等待人工审核。
+
+本轮没有把结构验证包装成 DeepSeek 官方认证或安全审计，也不会在服务器执行第三方 Bundle 代码。
 
 本项目是独立的社区规划项目，与 DeepSeek 官方无隶属或背书关系；“STEAM 创意工坊”仅描述产品交互范式，项目不使用 Valve/Steam 的商标、素材或页面设计。
 

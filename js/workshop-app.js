@@ -1,13 +1,4 @@
-const api = async (path, options = {}) => {
-  const response = await fetch(`/api/v1${path}`, {
-    credentials: 'same-origin',
-    ...options,
-    headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}), ...options.headers },
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error?.message || `请求失败 (${response.status})`);
-  return body;
-};
+import { api } from '/js/account-api.js';
 
 let catalog = [];
 let currentUser = null;
@@ -57,28 +48,15 @@ function buildAccountUi() {
 
 function closeDialog() { document.getElementById('dshAccountDialog')?.classList.remove('open'); }
 
-function authForm(mode) {
-  const register = mode === 'register';
-  return `
-    <div class="dsh-tabs"><button data-auth-tab="login" class="${register ? '' : 'active'}">登录</button><button data-auth-tab="register" class="${register ? 'active' : ''}">注册</button></div>
-    <form class="dsh-form" id="dshAuthForm">
-      ${register ? '<label>用户名<input name="username" minlength="3" maxlength="32" required pattern="[A-Za-z0-9._-]+"></label><label>邮箱<input name="email" type="email" required></label>' : '<label>用户名或邮箱<input name="identity" required></label>'}
-      <label>密码<input name="password" type="password" minlength="10" maxlength="128" required></label>
-      <div class="dsh-message" id="dshAuthMessage">${register ? '至少 10 位，并同时包含字母和数字。' : ''}</div>
-      <button class="dsh-button primary" type="submit">${register ? '创建普通用户' : '登录'}</button>
-    </form>`;
-}
-
 function showAccountDialog(mode = 'login') {
+  if (!currentUser) {
+    const returnTo = `${location.pathname}${location.search}${location.hash}`;
+    location.href = `/login/?mode=${mode === 'register' ? 'register' : 'login'}&returnTo=${encodeURIComponent(returnTo)}`;
+    return;
+  }
   const dialog = document.getElementById('dshAccountDialog');
   dialog.classList.add('open');
   const body = document.getElementById('dshPanelBody');
-  if (!currentUser) {
-    body.innerHTML = authForm(mode);
-    body.querySelectorAll('[data-auth-tab]').forEach(button => button.addEventListener('click', () => showAccountDialog(button.dataset.authTab)));
-    body.querySelector('#dshAuthForm').addEventListener('submit', submitAuth);
-    return;
-  }
   body.innerHTML = `<p>已登录：<strong style="color:#66c0f4">${escapeHtml(currentUser.username)}</strong>　角色：${currentUser.role === 'admin' ? '管理员' : '普通用户'}</p>
     <p style="margin:12px 0;color:#8f98a0">收藏 ${currentUser.favorites.length} 个 · 订阅 ${currentUser.subscriptions.length} 个 · 注册于 ${new Date(currentUser.createdAt).toLocaleDateString()}</p>
     <button class="dsh-button" id="dshCreateCollection">将当前订阅保存为合集</button>
@@ -88,7 +66,7 @@ function showAccountDialog(mode = 'login') {
   body.querySelector('#dshLogoutButton').addEventListener('click', logout);
   body.querySelector('#dshCreateCollection').addEventListener('click', createCollection);
   body.querySelector('#dshChangePassword').addEventListener('click', changePassword);
-  body.querySelector('#dshAdminButton')?.addEventListener('click', showAdmin);
+  body.querySelector('#dshAdminButton')?.addEventListener('click', () => { location.href = '/admin/'; });
 }
 
 async function changePassword() {
@@ -100,7 +78,7 @@ async function changePassword() {
   currentUser = null;
   updateAccountButton();
   alert('密码已修改，请重新登录');
-  showAccountDialog();
+  location.href = `/login/?returnTo=${encodeURIComponent(location.pathname + location.search + location.hash)}`;
 }
 
 async function createCollection() {
@@ -108,19 +86,6 @@ async function createCollection() {
   if (!name) return;
   await api('/me/collections', { method: 'POST', body: JSON.stringify({ name, description: '由我的订阅生成', pluginIds: currentUser.subscriptions }) });
   alert('合集已保存到账号');
-}
-
-async function submitAuth(event) {
-  event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const register = form.has('username');
-  const payload = Object.fromEntries(form.entries());
-  try {
-    const result = await api(register ? '/auth/register' : '/auth/login', { method: 'POST', body: JSON.stringify(payload) });
-    currentUser = result.user;
-    updateAccountButton();
-    showAccountDialog();
-  } catch (error) { document.getElementById('dshAuthMessage').textContent = error.message; }
 }
 
 async function logout() {
@@ -139,54 +104,6 @@ function updateAccountButton() {
     const value = `${currentUser.subscriptions.length} 件`;
     if (count.textContent !== value) count.textContent = value;
   }
-}
-
-async function showAdmin() {
-  const [overview, users, plugins] = await Promise.all([api('/admin/overview'), api('/admin/users'), api('/admin/plugins')]);
-  document.getElementById('dshPanelTitle').textContent = '管理面板';
-  const body = document.getElementById('dshPanelBody');
-  body.innerHTML = `
-    <div class="dsh-admin-grid"><div class="dsh-stat"><strong>${overview.users}</strong>用户</div><div class="dsh-stat"><strong>${overview.activeUsers}</strong>活跃</div><div class="dsh-stat"><strong>${overview.admins}</strong>管理员</div><div class="dsh-stat"><strong>${overview.plugins}</strong>GitHub 插件</div><div class="dsh-stat"><strong>${overview.approvedPlugins}</strong>已展示</div></div>
-    <button class="dsh-button primary" id="dshSyncGithub">立即同步 GitHub Topic</button><span class="dsh-message" id="dshAdminMessage"></span>
-    <h3 style="margin-top:18px;color:#fff">用户管理</h3>${userTable(users.items)}
-    <h3 style="margin-top:18px;color:#fff">插件审核</h3>${pluginTable(plugins.items)}
-  `;
-  body.querySelector('#dshSyncGithub').addEventListener('click', syncGithub);
-  body.querySelectorAll('[data-user-action]').forEach(button => button.addEventListener('click', adminUserAction));
-  body.querySelectorAll('[data-plugin-action]').forEach(button => button.addEventListener('click', adminPluginAction));
-}
-
-function userTable(users) {
-  return `<table class="dsh-table"><thead><tr><th>用户</th><th>邮箱</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody>${users.map(user => `<tr><td>${escapeHtml(user.username)}</td><td>${escapeHtml(user.email)}</td><td>${user.role}</td><td>${user.status}</td><td><button class="dsh-button" data-user-action="role" data-id="${user.id}" data-value="${user.role === 'admin' ? 'user' : 'admin'}">切换角色</button><button class="dsh-button" data-user-action="status" data-id="${user.id}" data-value="${user.status === 'active' ? 'disabled' : 'active'}">${user.status === 'active' ? '停用' : '启用'}</button></td></tr>`).join('')}</tbody></table>`;
-}
-
-function pluginTable(plugins) {
-  return `<table class="dsh-table"><thead><tr><th>项目</th><th>Bundle 证据</th><th>Stars</th><th>审核</th><th>操作</th></tr></thead><tbody>${plugins.map(plugin => `<tr><td><a href="${plugin.url}" target="_blank" rel="noopener">${escapeHtml(plugin.fullName)}</a></td><td>${escapeHtml(plugin.verification?.packageJsonPath)} → ${escapeHtml(plugin.verification?.patchPath)}<br><small>${escapeHtml(plugin.verification?.commitSha?.slice(0, 12))}</small></td><td>${plugin.stars}</td><td>${plugin.moderation.status}</td><td><button class="dsh-button" data-plugin-action="status" data-id="${plugin.id}" data-value="${plugin.moderation.status === 'approved' ? 'hidden' : 'approved'}">${plugin.moderation.status === 'approved' ? '隐藏' : '展示'}</button><button class="dsh-button" data-plugin-action="featured" data-id="${plugin.id}" data-value="${!plugin.moderation.featured}">切换精选</button></td></tr>`).join('')}</tbody></table>`;
-}
-
-async function syncGithub(event) {
-  event.currentTarget.disabled = true;
-  const message = document.getElementById('dshAdminMessage');
-  try {
-    const result = await api('/admin/github-sync', { method: 'POST' });
-    message.textContent = ` 已验证 ${result.verifiedCount} 个 DeepSeek Harness Bundle；新发现默认等待人工审核`;
-    await loadCatalog();
-    await showAdmin();
-  } catch (error) { message.textContent = ` ${error.message}`; event.currentTarget.disabled = false; }
-}
-
-async function adminUserAction(event) {
-  const button = event.currentTarget;
-  await api(`/admin/users/${button.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ [button.dataset.userAction]: button.dataset.value }) });
-  await showAdmin();
-}
-
-async function adminPluginAction(event) {
-  const button = event.currentTarget;
-  const value = button.dataset.pluginAction === 'featured' ? button.dataset.value === 'true' : button.dataset.value;
-  await api(`/admin/plugins/${encodeURIComponent(button.dataset.id)}`, { method: 'PATCH', body: JSON.stringify({ [button.dataset.pluginAction]: value }) });
-  await loadCatalog();
-  await showAdmin();
 }
 
 function hydrateCards() {
