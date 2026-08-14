@@ -74,10 +74,19 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
     for (const files of fixtures) expect(await verifyGitHubRepository(repository, undefined, fixtureFetch(files))).toBeUndefined()
   })
 
-  it('requires DSH or Cordis dependency/module evidence', async () => {
+  it('requires an explicit DSH or Cordis package dependency', async () => {
     const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
       'package.json': JSON.stringify({ name: '@community/config-only', dsh: { bundle: { patch: './patch.yml' } } }),
       'patch.yml': '- insert:\n    - id: config-only\n      config: {}\n',
+    }))
+    expect(result.status).toBe('rejected')
+    expect(result.reason).toBe('DSH_DEPENDENCY_EVIDENCE_WEAK')
+  })
+
+  it('does not accept unrelated dependency names that merely contain dsh letters', async () => {
+    const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
+      'package.json': JSON.stringify({ name: '@community/topic-spam', dependencies: { redshift: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'patch.yml': '- insert:\n    - id: topic-spam\n      name: "@community/topic-spam"\n',
     }))
     expect(result.status).toBe('rejected')
     expect(result.reason).toBe('DSH_DEPENDENCY_EVIDENCE_WEAK')

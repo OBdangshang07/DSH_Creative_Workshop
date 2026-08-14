@@ -391,7 +391,11 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.get('/v1/admin/overview', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
     const current = presence.summary(); const history = accounts.presenceHistory()
-    return { ...accounts.summary(), presence: { ...current, peak24h: Math.max(current.peak24h, history.peak24h), buckets: history.buckets } }
+    return {
+      ...accounts.summary(),
+      githubSync: { authenticated: options.githubToken !== undefined, batchLimit: options.githubToken === undefined ? 15 : 60 },
+      presence: { ...current, peak24h: Math.max(current.peak24h, history.peak24h), buckets: history.buckets },
+    }
   })
   app.get<{ Querystring: PageQuery }>('/v1/admin/users', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
@@ -455,9 +459,17 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const admin = requireAdmin(request, reply); if (admin === undefined) return
     try { return reply.code(202).send({ run: sync.create(admin.id, undefined, context(request)) }) } catch (cause) { if (cause instanceof Error && cause.message === 'SYNC_ALREADY_RUNNING') return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '已有同步任务正在运行')); throw cause }
   })
-  app.get('/v1/admin/sync-runs', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return accounts.listSyncRuns() })
+  app.get('/v1/admin/sync-runs', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return { ...accounts.listSyncRuns(), github: { authenticated: options.githubToken !== undefined, batchLimit: options.githubToken === undefined ? 15 : 60 } }
+  })
   app.get<{ Params: { id: string } }>('/v1/admin/sync-runs/:id', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; const run = accounts.syncRun(request.params.id); return run ?? reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')) })
-  app.post<{ Params: { id: string } }>('/v1/admin/sync-runs/:id/retry', async (request, reply) => { const admin = requireAdmin(request, reply); if (admin === undefined) return; if (accounts.syncRun(request.params.id) === undefined) return reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')); try { return reply.code(202).send({ run: sync.create(admin.id, request.params.id, context(request)) }) } catch { return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '已有同步任务正在运行')) } })
+  app.post<{ Params: { id: string } }>('/v1/admin/sync-runs/:id/retry', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    if (accounts.syncRun(request.params.id) === undefined) return reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在'))
+    if (accounts.retryableSyncRepositories(request.params.id).length === 0) return reply.code(409).send(error('SYNC_NOTHING_TO_RETRY', '该任务没有失败或延后处理的候选仓库'))
+    try { return reply.code(202).send({ run: sync.create(admin.id, request.params.id, context(request)) }) } catch { return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '已有同步任务正在运行')) }
+  })
   app.get<{ Querystring: PageQuery & { type?: string } }>('/v1/admin/community', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
     return accounts.communityModeration({

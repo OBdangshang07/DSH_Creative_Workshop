@@ -41,7 +41,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.2', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.3', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -74,9 +74,9 @@ describe('marketplace account and administration API', () => {
     const revisions = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/revisions` })
     const platformActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=platform' })
     const pluginActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=plugin' })
-    expect(releases.json().items[0]).toMatchObject({ version: '1.1.2', title: expect.any(String), changes: expect.any(Array) })
+    expect(releases.json().items[0]).toMatchObject({ version: '1.1.3', title: expect.any(String), changes: expect.any(Array) })
     expect(revisions.json().items[0]).toMatchObject({ revisionId: expect.any(String), release: { sourceType: 'missing', summary: '作者未提供更新日志。' } })
-    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.2', changes: expect.any(Array) } })
+    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.3', changes: expect.any(Array) } })
     expect(pluginActivity.json().items[0]).toMatchObject({ type: 'plugin.published', payload: { release: { sourceType: 'missing' } } })
   })
 
@@ -222,7 +222,11 @@ describe('marketplace account and administration API', () => {
 
     const reportId = reportList.json().items[0].id as string
     expect((await app.inject({ method: 'PATCH', url: `/v1/admin/reports/${reportId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'resolved', resolution: 'Reviewed and retained the content while locking replies.' } })).statusCode).toBe(200)
-    expect((await app.inject({ method: 'GET', url: '/v1/admin/overview', headers: { cookie: adminCookie } })).json()).toMatchObject({ discussions: 1, pendingReports: 0, presence: { online: 0, peak24h: expect.any(Number) } })
+    expect((await app.inject({ method: 'GET', url: '/v1/admin/overview', headers: { cookie: adminCookie } })).json()).toMatchObject({
+      discussions: 1, pendingReports: 0, pendingRevisions: expect.any(Number),
+      githubSync: { authenticated: false, batchLimit: 15 },
+      presence: { online: 0, peak24h: expect.any(Number) },
+    })
   })
 
   it('blocks relations and reviews for pending or unknown plugins', async () => {

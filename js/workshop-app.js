@@ -3,7 +3,7 @@ import { api, escapeHtml, formatTime } from '/js/account-api.js';
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.2',
+  version: '1.1.3',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },

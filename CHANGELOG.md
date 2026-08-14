@@ -2,6 +2,26 @@
 
 All notable changes to DSH Creative Workshop are recorded here.
 
+## [1.1.3] - 2026-08-14
+
+### Added
+
+- Rate-limit-aware GitHub synchronization that preflights the core API budget and defers excess repositories instead of turning them into false failures.
+- Continuation runs that process only failed or deferred repositories from the selected synchronization job.
+- Separate synchronization metrics for candidate repositories, verified repositories, Bundle revisions, deferred work and public/pending catalog state.
+- Dual discovery coverage for recently updated and high-starred `dsh-plugin` repositories.
+
+### Changed
+
+- Anonymous GitHub synchronization uses a safe 15-repository batch and exposes the missing-token state in the administration console.
+- GitHub Releases are fetched lazily only after a repository presents a plausible DSH Bundle manifest, reducing API consumption for unrelated repositories.
+- DSH dependency verification now uses explicit Cordis/DeepSeek Harness package-name boundaries instead of broad substring matching.
+
+### Fixed
+
+- Retrying a partially failed synchronization now continues its unfinished repositories instead of repeating the same discovery batch.
+- GitHub 403 responses now distinguish exhausted primary limits from secondary rate limiting.
+
 ## [1.1.2] - 2026-08-14
 
 ### Added
