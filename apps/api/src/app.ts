@@ -5,6 +5,7 @@ import { AccountStore, publicUser, type BootstrapAdmin, type CatalogQuery, type 
 import { githubSeed } from './github-seed.js'
 import { CatalogSyncService } from './sync-service.js'
 import { APP_VERSION } from './version.js'
+import { PresenceService } from './presence-service.js'
 
 interface ApiOptions {
   allowedOrigins?: readonly string[]
@@ -14,6 +15,7 @@ interface ApiOptions {
   bootstrapAdmin?: BootstrapAdmin
   githubToken?: string
   logger?: boolean
+  presenceService?: PresenceService
 }
 
 interface PageQuery {
@@ -45,6 +47,8 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   const accounts = options.accountStore ?? new AccountStore(options.dataFile, options.legacyDataFile)
   await accounts.initialize(options.bootstrapAdmin, githubSeed)
   const sync = new CatalogSyncService(accounts, options.githubToken)
+  const presence = options.presenceService ?? new PresenceService()
+  let lastPresenceBucket = ''
   const app = Fastify({
     logger: options.logger ?? false,
     trustProxy: '127.0.0.1',
@@ -83,10 +87,27 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   const setSession = (reply: FastifyReply, session: { token: string; expiresAt: string }) => reply.header(
     'Set-Cookie', `dsh_session=${encodeURIComponent(session.token)}; Path=/api/; HttpOnly; Secure; SameSite=Strict; Expires=${new Date(session.expiresAt).toUTCString()}`,
   )
+  const setPresence = (reply: FastifyReply, token: string) => reply.header(
+    'Set-Cookie', `dsh_presence=${encodeURIComponent(token)}; Path=/api/; HttpOnly; Secure; SameSite=Lax; Max-Age=2592000`,
+  )
 
   app.get('/health', async () => ({ ok: true, service: 'marketplace-api', version: APP_VERSION }))
   app.get('/health/live', async () => ({ ok: true, version: APP_VERSION }))
   app.get('/health/ready', async () => ({ ok: true, version: APP_VERSION, storage: 'sqlite-wal', catalog: accounts.summary().plugins }))
+  app.get('/v1/presence/summary', async (_request, reply) => { reply.header('Cache-Control', 'no-store'); return presence.summary() })
+  app.post('/v1/presence/heartbeat', async (request, reply) => {
+    const result = presence.heartbeat(cookieValue(request.headers.cookie, 'dsh_presence'), request.ip, request.headers['user-agent'] ?? '')
+    if (result.issued && result.token !== undefined) setPresence(reply, result.token)
+    const bucket = result.sampledAt.slice(0, 16)
+    if (result.token !== undefined && bucket !== lastPresenceBucket) { lastPresenceBucket = bucket; accounts.recordPresenceSnapshot(result.online, new Date(result.sampledAt)) }
+    reply.header('Cache-Control', 'no-store')
+    return { online: result.online, sampledAt: result.sampledAt, windowSeconds: result.windowSeconds }
+  })
+  app.post('/v1/presence/leave', async (request, reply) => {
+    const online = presence.leave(cookieValue(request.headers.cookie, 'dsh_presence'))
+    reply.header('Cache-Control', 'no-store')
+    return { online }
+  })
 
   const publicCatalog = async (request: FastifyRequest<{ Querystring: PageQuery }>) => {
     const q = request.query.q?.trim()
@@ -185,18 +206,30 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const state = accounts.pluginState(user.id, request.params.id)
     return state === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开')) : { state }
   })
-  app.get('/v1/me/collections', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.userCollections(user.id) } })
-  app.post<{ Body: { name?: unknown; description?: unknown; pluginIds?: unknown } }>('/v1/me/collections', async (request, reply) => {
-    const user = requireUser(request, reply); if (user === undefined) return
-    const { name, description, pluginIds } = request.body ?? {}
-    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string')) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明或插件列表无效'))
-    return reply.code(201).send({ collection: await accounts.createCollection(user.id, name.trim(), description.trim(), pluginIds as string[]) })
+  app.get<{ Querystring: PageQuery }>('/v1/collections', async request => accounts.publicCollections({
+    ...(request.query.q ? { q: request.query.q } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 20),
+  }))
+  app.get<{ Params: { id: string } }>('/v1/collections/:id', async (request, reply) => {
+    const collection = accounts.publicCollection(request.params.id)
+    return collection === undefined ? reply.code(404).send(error('COLLECTION_NOT_FOUND', '公开合集不存在')) : { collection }
   })
-  app.patch<{ Params: { id: string }; Body: { name?: unknown; description?: unknown; pluginIds?: unknown } }>('/v1/me/collections/:id', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/v1/collections/:id/clone', async (request, reply) => {
     const user = requireUser(request, reply); if (user === undefined) return
-    const { name, description, pluginIds } = request.body ?? {}
-    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string')) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明或插件列表无效'))
-    const collection = await accounts.updateCollection(user.id, request.params.id, { name: name.trim(), description: description.trim(), pluginIds: pluginIds as string[] })
+    const collection = await accounts.cloneCollection(user.id, request.params.id)
+    return collection === undefined ? reply.code(404).send(error('COLLECTION_NOT_FOUND', '公开合集不存在')) : reply.code(201).send({ collection })
+  })
+  app.get('/v1/me/collections', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.userCollections(user.id) } })
+  app.post<{ Body: { name?: unknown; description?: unknown; pluginIds?: unknown; visibility?: unknown } }>('/v1/me/collections', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { name, description, pluginIds, visibility = 'private' } = request.body ?? {}
+    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string') || !['private','public'].includes(String(visibility))) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明、可见性或插件列表无效'))
+    return reply.code(201).send({ collection: await accounts.createCollection(user.id, name.trim(), description.trim(), pluginIds as string[], visibility as 'private' | 'public') })
+  })
+  app.patch<{ Params: { id: string }; Body: { name?: unknown; description?: unknown; pluginIds?: unknown; visibility?: unknown } }>('/v1/me/collections/:id', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { name, description, pluginIds, visibility } = request.body ?? {}
+    if (typeof name !== 'string' || name.trim().length < 2 || name.trim().length > 80 || typeof description !== 'string' || description.length > 500 || !Array.isArray(pluginIds) || !pluginIds.every(id => typeof id === 'string') || !['private','public'].includes(String(visibility))) return reply.code(400).send(error('COLLECTION_INVALID', '合集名称、说明、可见性或插件列表无效'))
+    const collection = await accounts.updateCollection(user.id, request.params.id, { name: name.trim(), description: description.trim(), pluginIds: pluginIds as string[], visibility: visibility as 'private' | 'public' })
     return collection === undefined ? reply.code(404).send(error('COLLECTION_NOT_FOUND', '合集不存在')) : { collection }
   })
   app.delete<{ Params: { id: string } }>('/v1/me/collections/:id', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { ok: await accounts.deleteCollection(user.id, request.params.id) } })
@@ -219,7 +252,74 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.post<{ Params: { id: string }; Body: { rating?: unknown; body?: unknown } }>('/v1/plugins/:id/reviews', addReview)
   app.post<{ Params: { id: string }; Body: { rating?: unknown; body?: unknown } }>('/v1/github-plugins/:id/reviews', addReview)
 
-  app.get('/v1/admin/overview', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return accounts.summary() })
+  app.get<{ Querystring: PageQuery }>('/v1/reviews', async request => accounts.recentReviews({
+    page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 20),
+  }))
+  app.get<{ Querystring: PageQuery & { pluginId?: string } }>('/v1/discussions', async request => accounts.discussionThreads({
+    ...(request.query.q ? { q: request.query.q } : {}), ...(request.query.pluginId ? { pluginId: request.query.pluginId } : {}),
+    page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 20),
+  }))
+  app.post<{ Body: { title?: unknown; body?: unknown; pluginId?: unknown } }>('/v1/discussions', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { title, body, pluginId } = request.body ?? {}
+    if (typeof title !== 'string' || title.trim().length < 4 || title.trim().length > 120 || typeof body !== 'string' || body.trim().length < 10 || body.trim().length > 5000 || (pluginId !== undefined && typeof pluginId !== 'string')) return reply.code(400).send(error('DISCUSSION_INVALID', '标题须为 4–120 字，正文须为 10–5000 字'))
+    if (!accounts.allowAuthAttempt(`discussion:thread:${user.id}`, 3, 10 * 60_000, 10 * 60_000)) return reply.code(429).send(error('DISCUSSION_RATE_LIMITED', '发帖过于频繁，请稍后再试'))
+    try { return reply.code(201).send({ thread: await accounts.createDiscussion(user.id, title.trim(), body.trim(), typeof pluginId === 'string' && pluginId ? pluginId : undefined) }) }
+    catch (cause) { if (cause instanceof Error && cause.message === 'CATALOG_PLUGIN_NOT_PUBLIC') return reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '关联插件不存在或未公开')); throw cause }
+  })
+  app.get<{ Params: { id: string } }>('/v1/discussions/:id', async (request, reply) => {
+    const thread = accounts.discussionThread(request.params.id)
+    return thread === undefined ? reply.code(404).send(error('DISCUSSION_NOT_FOUND', '讨论不存在或不可见')) : { thread }
+  })
+  app.delete<{ Params: { id: string } }>('/v1/discussions/:id', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { ok: await accounts.deleteDiscussionContent(user.id, 'thread', request.params.id) }
+  })
+  app.get<{ Params: { id: string }; Querystring: PageQuery }>('/v1/discussions/:id/replies', async (request, reply) => {
+    const result = accounts.discussionReplies(request.params.id, { page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 30) })
+    return result === undefined ? reply.code(404).send(error('DISCUSSION_NOT_FOUND', '讨论不存在或不可见')) : result
+  })
+  app.post<{ Params: { id: string }; Body: { body?: unknown } }>('/v1/discussions/:id/replies', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const body = request.body?.body
+    if (typeof body !== 'string' || body.trim().length < 2 || body.trim().length > 3000) return reply.code(400).send(error('DISCUSSION_REPLY_INVALID', '回复须为 2–3000 字'))
+    if (!accounts.allowAuthAttempt(`discussion:reply:${user.id}`, 10, 10 * 60_000, 10 * 60_000)) return reply.code(429).send(error('DISCUSSION_RATE_LIMITED', '回复过于频繁，请稍后再试'))
+    try { return reply.code(201).send({ reply: await accounts.createDiscussionReply(user.id, request.params.id, body.trim()) }) }
+    catch (cause) {
+      if (cause instanceof Error && cause.message === 'DISCUSSION_LOCKED') return reply.code(409).send(error('DISCUSSION_LOCKED', '该讨论已锁定'))
+      if (cause instanceof Error && cause.message === 'DISCUSSION_NOT_FOUND') return reply.code(404).send(error('DISCUSSION_NOT_FOUND', '讨论不存在或不可见'))
+      throw cause
+    }
+  })
+  app.delete<{ Params: { id: string } }>('/v1/discussion-replies/:id', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { ok: await accounts.deleteDiscussionContent(user.id, 'reply', request.params.id) }
+  })
+  app.post<{ Body: { targetType?: unknown; targetId?: unknown; reason?: unknown } }>('/v1/reports', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const { targetType, targetId, reason } = request.body ?? {}
+    if (!['thread','reply','review','collection'].includes(String(targetType)) || typeof targetId !== 'string' || typeof reason !== 'string' || reason.trim().length < 4 || reason.trim().length > 500) return reply.code(400).send(error('REPORT_INVALID', '举报目标或原因无效'))
+    if (!accounts.allowAuthAttempt(`report:${user.id}`, 10, 60 * 60_000, 60 * 60_000)) return reply.code(429).send(error('REPORT_RATE_LIMITED', '举报提交过于频繁'))
+    try { return reply.code(201).send({ created: await accounts.createReport(user.id, targetType as 'thread' | 'reply' | 'review' | 'collection', targetId, reason.trim()) }) }
+    catch (cause) { if (cause instanceof Error && cause.message === 'REPORT_TARGET_NOT_FOUND') return reply.code(404).send(error('REPORT_TARGET_NOT_FOUND', '举报目标不存在')); throw cause }
+  })
+  app.get<{ Querystring: PageQuery }>('/v1/activity', async request => accounts.activityFeed({ page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) }))
+  app.get<{ Querystring: PageQuery }>('/v1/me/notifications', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return accounts.notifications(user.id, { page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.post<{ Body: { ids?: unknown } }>('/v1/me/notifications/read', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const ids = request.body?.ids
+    if (ids !== undefined && (!Array.isArray(ids) || !ids.every(id => typeof id === 'string'))) return reply.code(400).send(error('NOTIFICATION_IDS_INVALID', '通知 ID 列表无效'))
+    return { updated: accounts.markNotificationsRead(user.id, ids as string[] | undefined) }
+  })
+
+  app.get('/v1/admin/overview', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    const current = presence.summary(); const history = accounts.presenceHistory()
+    return { ...accounts.summary(), presence: { ...current, peak24h: Math.max(current.peak24h, history.peak24h), buckets: history.buckets } }
+  })
   app.get<{ Querystring: PageQuery }>('/v1/admin/users', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
     return accounts.users({ ...(request.query.q ? { q: request.query.q } : {}), ...(request.query.role ? { role: request.query.role } : {}), ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
@@ -255,6 +355,39 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.get('/v1/admin/sync-runs', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return accounts.listSyncRuns() })
   app.get<{ Params: { id: string } }>('/v1/admin/sync-runs/:id', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; const run = accounts.syncRun(request.params.id); return run ?? reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')) })
   app.post<{ Params: { id: string } }>('/v1/admin/sync-runs/:id/retry', async (request, reply) => { const admin = requireAdmin(request, reply); if (admin === undefined) return; if (accounts.syncRun(request.params.id) === undefined) return reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')); try { return reply.code(202).send({ run: sync.create(admin.id, request.params.id, context(request)) }) } catch { return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '已有同步任务正在运行')) } })
+  app.get<{ Querystring: PageQuery & { type?: string } }>('/v1/admin/community', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.communityModeration({
+      ...(request.query.q ? { q: request.query.q } : {}), ...(request.query.type ? { type: request.query.type } : {}),
+      ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25),
+    })
+  })
+  app.get<{ Querystring: PageQuery }>('/v1/admin/reports', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.reports({ ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.patch<{ Params: { id: string }; Body: { status?: unknown; resolution?: unknown } }>('/v1/admin/reports/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { status, resolution } = request.body ?? {}
+    if (!['resolved','dismissed'].includes(String(status)) || typeof resolution !== 'string' || resolution.trim().length < 3 || resolution.trim().length > 500) return reply.code(400).send(error('REPORT_RESOLUTION_INVALID', '处理状态或说明无效'))
+    const ok = await accounts.resolveReport(admin.id, request.params.id, status as 'resolved' | 'dismissed', resolution.trim(), context(request))
+    return ok ? { ok: true } : reply.code(404).send(error('REPORT_NOT_FOUND', '举报记录不存在'))
+  })
+  app.patch<{ Params: { type: string; id: string }; Body: { status?: unknown; reason?: unknown } }>('/v1/admin/discussions/:type/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { status, reason } = request.body ?? {}; const type = request.params.type
+    const allowed = type === 'thread' ? ['open','locked','hidden'] : type === 'reply' ? ['visible','hidden'] : []
+    if (!allowed.includes(String(status)) || typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) return reply.code(400).send(error('COMMUNITY_MODERATION_INVALID', '治理状态或原因无效'))
+    const ok = await accounts.moderateDiscussionContent(admin.id, type as 'thread' | 'reply', request.params.id, status as 'open' | 'locked' | 'hidden' | 'visible', reason.trim(), context(request))
+    return ok ? { ok: true } : reply.code(404).send(error('COMMUNITY_CONTENT_NOT_FOUND', '社区内容不存在'))
+  })
+  app.patch<{ Params: { id: string }; Body: { status?: unknown; reason?: unknown } }>('/v1/admin/collections/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { status, reason } = request.body ?? {}
+    if (!['visible','hidden'].includes(String(status)) || typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) return reply.code(400).send(error('COLLECTION_MODERATION_INVALID', '合集治理状态或原因无效'))
+    const ok = await accounts.moderateCollection(admin.id, request.params.id, status as 'visible' | 'hidden', reason.trim(), context(request))
+    return ok ? { ok: true } : reply.code(404).send(error('COLLECTION_NOT_FOUND', '合集不存在'))
+  })
   app.get<{ Querystring: PageQuery }>('/v1/admin/audit', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return accounts.auditRecords({ ...(request.query.q ? { q: request.query.q } : {}), ...(request.query.action ? { action: request.query.action } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) }) })
 
   app.post('/v1/admin/github-sync', async (request, reply) => { const admin = requireAdmin(request, reply); if (admin === undefined) return; try { return reply.code(202).send({ run: sync.create(admin.id, undefined, context(request)), deprecated: true }) } catch { return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '已有同步任务正在运行')) } })

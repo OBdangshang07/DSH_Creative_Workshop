@@ -41,7 +41,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.0', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.1', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -101,7 +101,7 @@ describe('marketplace account and administration API', () => {
     const pluginState = await app.inject({ method: 'GET', url: `/v1/me/plugins/${encodeURIComponent(published.id)}/state`, headers: { cookie: userCookie } })
     expect(pluginState.json().state).toMatchObject({ favorited: true, subscribed: true, collectionIds: [collection.json().collection.id], review: { rating: 4 } })
 
-    const changedCollection = await app.inject({ method: 'PATCH', url: `/v1/me/collections/${encodeURIComponent(collection.json().collection.id)}`, headers: { cookie: userCookie, origin }, payload: { name: 'Updated Harness stack', description: 'Updated list', pluginIds: [] } })
+    const changedCollection = await app.inject({ method: 'PATCH', url: `/v1/me/collections/${encodeURIComponent(collection.json().collection.id)}`, headers: { cookie: userCookie, origin }, payload: { name: 'Updated Harness stack', description: 'Updated list', pluginIds: [], visibility: 'private' } })
     expect(changedCollection.json().collection).toMatchObject({ name: 'Updated Harness stack', pluginIds: [] })
 
     const detail = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}` })
@@ -113,10 +113,72 @@ describe('marketplace account and administration API', () => {
     await accounts.ingestVerifiedPlugins('sync', [next])
     const candidate = accounts.githubSnapshot(true).items.find(item => item.id === published.id)!
     await accounts.moderatePlugin('admin', published.id, { revisionId: candidate.revisionId, status: 'approved' })
+    const updateNotifications = await app.inject({ method: 'GET', url: '/v1/me/notifications', headers: { cookie: userCookie } })
+    expect(updateNotifications.json()).toMatchObject({ unread: 1, total: 1, items: [{ type: 'plugin.updated', pluginId: published.id }] })
+    await accounts.moderatePlugin('admin', published.id, { revisionId: candidate.revisionId, status: 'approved' })
+    expect((await app.inject({ method: 'GET', url: '/v1/me/notifications', headers: { cookie: userCookie } })).json().total).toBe(1)
     const before = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/reviews` })
     expect(before.json().summary).toEqual({ count: 0, score: 0 })
     const added = await app.inject({ method: 'POST', url: `/v1/plugins/${encodeURIComponent(published.id)}/reviews`, headers: { cookie: userCookie, origin }, payload: { rating: 5, body: 'Confirmed again on the new published revision.' } })
     expect(added.json().review.revisionId).toBe(candidate.revisionId)
+    expect((await app.inject({ method: 'GET', url: '/v1/reviews' })).json().items[0]).toMatchObject({ pluginId: published.id, rating: 5 })
+    expect((await app.inject({ method: 'GET', url: '/v1/activity' })).json().items.some((item: { type: string }) => item.type === 'plugin.published')).toBe(true)
+  })
+
+  it('counts active browsers without double-counting tabs that share a cookie', async () => {
+    const first = await app.inject({ method: 'POST', url: '/v1/presence/heartbeat', headers: { 'user-agent': 'Vitest Browser' } })
+    const presenceCookie = first.headers['set-cookie']!.split(';', 1)[0]!
+    expect(first.json()).toMatchObject({ online: 1, windowSeconds: 90 })
+    const secondTab = await app.inject({ method: 'POST', url: '/v1/presence/heartbeat', headers: { cookie: presenceCookie, 'user-agent': 'Vitest Browser' } })
+    expect(secondTab.json().online).toBe(1)
+    const bot = await app.inject({ method: 'POST', url: '/v1/presence/heartbeat', headers: { 'user-agent': 'Lighthouse' } })
+    expect(bot.json().online).toBe(1)
+    expect((await app.inject({ method: 'POST', url: '/v1/presence/leave', headers: { cookie: presenceCookie } })).json().online).toBe(0)
+  })
+
+  it('keeps private collections private and supports public discovery, cloning and moderation', async () => {
+    const privateCollection = await app.inject({ method: 'POST', url: '/v1/me/collections', headers: { cookie: userCookie, origin }, payload: { name: 'Private setup', description: 'Only visible to its owner', pluginIds: [published.id], visibility: 'private' } })
+    expect((await app.inject({ method: 'GET', url: `/v1/collections/${privateCollection.json().collection.id}` })).statusCode).toBe(404)
+
+    const created = await app.inject({ method: 'POST', url: '/v1/me/collections', headers: { cookie: userCookie, origin }, payload: { name: 'Public Harness setup', description: 'A reusable public setup', pluginIds: [published.id], visibility: 'public' } })
+    const collectionId = created.json().collection.id as string
+    expect((await app.inject({ method: 'GET', url: '/v1/collections?q=Harness' })).json()).toMatchObject({ total: 1, items: [{ id: collectionId, visibility: 'public' }] })
+    const cloned = await app.inject({ method: 'POST', url: `/v1/collections/${collectionId}/clone`, headers: { cookie: adminCookie, origin } })
+    expect(cloned.statusCode).toBe(201)
+    expect(cloned.json().collection).toMatchObject({ visibility: 'private', pluginIds: [published.id] })
+
+    const hidden = await app.inject({ method: 'PATCH', url: `/v1/admin/collections/${collectionId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'hidden', reason: 'Temporarily hidden by the community moderation test.' } })
+    expect(hidden.statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: `/v1/collections/${collectionId}` })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: '/v1/activity' })).json().items.some((item: { collectionId?: string }) => item.collectionId === collectionId)).toBe(false)
+  })
+
+  it('supports discussions, replies, notifications, reports and administrator locking', async () => {
+    const created = await app.inject({ method: 'POST', url: '/v1/discussions', headers: { cookie: userCookie, origin }, payload: { title: 'How should this bundle be configured?', body: 'I need a safe baseline configuration for this verified bundle.', pluginId: published.id } })
+    expect(created.statusCode).toBe(201)
+    const threadId = created.json().thread.id as string
+    expect((await app.inject({ method: 'GET', url: `/v1/discussions/${threadId}` })).json().thread).toMatchObject({ id: threadId, status: 'open' })
+
+    const reply = await app.inject({ method: 'POST', url: `/v1/discussions/${threadId}/replies`, headers: { cookie: adminCookie, origin }, payload: { body: 'Start with the published revision and review its patch evidence.' } })
+    expect(reply.statusCode).toBe(201)
+    const notifications = await app.inject({ method: 'GET', url: '/v1/me/notifications', headers: { cookie: userCookie } })
+    expect(notifications.json().items.some((item: { type: string; threadId?: string }) => item.type === 'discussion.reply' && item.threadId === threadId)).toBe(true)
+
+    const report = await app.inject({ method: 'POST', url: '/v1/reports', headers: { cookie: adminCookie, origin }, payload: { targetType: 'thread', targetId: threadId, reason: 'Test report for the moderation workflow.' } })
+    expect(report.json()).toEqual({ created: true })
+    const reportList = await app.inject({ method: 'GET', url: '/v1/admin/reports?status=pending', headers: { cookie: adminCookie } })
+    expect(reportList.json().items[0]).toMatchObject({ targetType: 'thread', targetId: threadId, status: 'pending' })
+
+    const locked = await app.inject({ method: 'PATCH', url: `/v1/admin/discussions/thread/${threadId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'locked', reason: 'Locking this thread while the report is reviewed.' } })
+    expect(locked.statusCode).toBe(200)
+    const blockedReply = await app.inject({ method: 'POST', url: `/v1/discussions/${threadId}/replies`, headers: { cookie: userCookie, origin }, payload: { body: 'This reply must be rejected while locked.' } })
+    expect(blockedReply.statusCode).toBe(409)
+    expect(blockedReply.json().error.code).toBe('DISCUSSION_LOCKED')
+    expect((await app.inject({ method: 'GET', url: '/v1/admin/community?type=thread&status=locked', headers: { cookie: adminCookie } })).json()).toMatchObject({ total: 1, items: [{ id: threadId, reportCount: 1 }] })
+
+    const reportId = reportList.json().items[0].id as string
+    expect((await app.inject({ method: 'PATCH', url: `/v1/admin/reports/${reportId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'resolved', resolution: 'Reviewed and retained the content while locking replies.' } })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/v1/admin/overview', headers: { cookie: adminCookie } })).json()).toMatchObject({ discussions: 1, pendingReports: 0, presence: { online: 0, peak24h: expect.any(Number) } })
   })
 
   it('blocks relations and reviews for pending or unknown plugins', async () => {

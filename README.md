@@ -4,7 +4,7 @@
 
 > 产品与工程基线见 `docs/01`–`10`。浏览器工坊、独立账号页与管理控制台已经部署；实现边界与运维说明见 [`docs/11-implementation.md`](docs/11-implementation.md)。
 
-当前正式版本：**v1.1.0**。该版本建立了站内插件详情、Revision 绑定评价、真实分面检索、收藏/订阅列表、合集编辑和普通用户设备会话管理；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前正式版本：**v1.1.1**。该版本开放了真实在线人数、讨论与回复、公开合集广场、站内通知、动态/评价信息流，以及管理端社区治理；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 当前结论
 
@@ -72,8 +72,10 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 - 静态商店前端保持既有信息架构与视觉，目录卡片直接由 Marketplace API 的已审核数据渲染。
 - 卡片进入可刷新、可分享的 `/plugin/?id=...` 站内详情；GitHub 作为详情中的明确外部按钮。
 - 用户可管理真实收藏、订阅、合集、Revision 绑定评价和设备 Session；订阅不冒充本机安装。
+- 首页显示过去 90 秒内有前台活动的浏览器数量；同 Cookie 多标签页去重，自动化客户端不计入在线人数。
+- 游客可读讨论、回复、公开合集、全站评价和更新动态；登录用户可发帖、回复、举报、显式公开合集并复制他人的公开合集。
 - 独立 `/login/` 提供登录、注册、密码规则提示和安全站内回跳。
-- 独立 `/admin/` 提供总览、插件 revision 审核、异步 GitHub 同步、用户/Session 管理和审计日志。
+- 独立 `/admin/` 提供总览、在线峰值、插件 revision 审核、异步 GitHub 同步、用户/Session 管理、社区内容与举报治理和审计日志。
 - API 使用 SQLite WAL 持久化用户、Session、目录、审核、社区关系、同步任务和审计数据，并可从旧版 JSON 自动迁移。
 - GitHub `dsh-plugin` Topic 只作为候选发现源；目录固定 commit，检查 `package.json → dsh.bundle.patch → Cordis patch`，且新 revision 默认等待人工审核。
 

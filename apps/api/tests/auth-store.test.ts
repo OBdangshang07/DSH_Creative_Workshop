@@ -31,8 +31,8 @@ describe('SQLite account and catalog store', () => {
     const database = new DatabaseSync(databaseFile, { readOnly: true })
     expect(database.prepare('PRAGMA journal_mode').get()).toMatchObject({ journal_mode: 'wal' })
     expect(database.prepare('PRAGMA foreign_keys').get()).toMatchObject({ foreign_keys: 1 })
-    expect(database.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }, { version: 2 }])
-    expect(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get()).toMatchObject({ count: 15 })
+    expect(database.prepare('SELECT version FROM schema_migrations').all()).toEqual([{ version: 1 }, { version: 2 }, { version: 3 }])
+    expect(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='table'").get()).toMatchObject({ count: 21 })
     database.close()
   })
 
