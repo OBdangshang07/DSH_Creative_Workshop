@@ -90,3 +90,6 @@ updateStrength();
 api('/auth/me').then(result => {
   if (result.authenticated) location.replace(result.user.role === 'admin' && returnTo === '/' ? '/admin/' : returnTo);
 }).catch(() => { message.textContent = '服务暂时不可用，请稍后重试'; });
+fetch('/api/health').then(response => response.ok ? response.json() : null).then(health => {
+  document.getElementById('appVersion').textContent = health?.version ? `v${health.version}` : '版本未知';
+}).catch(() => { document.getElementById('appVersion').textContent = '版本未知'; });

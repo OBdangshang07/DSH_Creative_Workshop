@@ -41,7 +41,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.0', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -49,6 +49,7 @@ describe('marketplace account and administration API', () => {
     expect(response.statusCode).toBe(200)
     expect(response.json().items).toHaveLength(1)
     expect(response.json().items[0]).toMatchObject({ id: published.id, publication: 'published', verification: { status: 'verified_bundle' } })
+    expect(response.json().facets).toMatchObject({ kinds: [{ value: 'bundle', count: 1 }], surfaces: expect.arrayContaining([{ value: 'web', count: 1 }]) })
     expect(response.json().verificationNotice).toContain('dsh.bundle.patch')
     const missing = await app.inject({ method: 'GET', url: '/v1/plugins/missing' })
     expect(missing.statusCode).toBe(404)
@@ -92,6 +93,30 @@ describe('marketplace account and administration API', () => {
     expect(reviewed.statusCode).toBe(201)
     expect(updated.statusCode).toBe(201)
     expect(reviews.json().summary).toEqual({ count: 1, score: 4 })
+    expect(reviews.json()).toMatchObject({ page: 1, pageSize: 20, total: 1, revisionId: expect.any(String) })
+    expect(reviews.json().items[0]).toMatchObject({ revisionId: expect.any(String), createdAt: expect.any(String), updatedAt: expect.any(String) })
+
+    const relationList = await app.inject({ method: 'GET', url: '/v1/me/favorites', headers: { cookie: userCookie } })
+    expect(relationList.json()).toMatchObject({ total: 1, items: [{ plugin: { id: published.id }, savedAt: expect.any(String) }] })
+    const pluginState = await app.inject({ method: 'GET', url: `/v1/me/plugins/${encodeURIComponent(published.id)}/state`, headers: { cookie: userCookie } })
+    expect(pluginState.json().state).toMatchObject({ favorited: true, subscribed: true, collectionIds: [collection.json().collection.id], review: { rating: 4 } })
+
+    const changedCollection = await app.inject({ method: 'PATCH', url: `/v1/me/collections/${encodeURIComponent(collection.json().collection.id)}`, headers: { cookie: userCookie, origin }, payload: { name: 'Updated Harness stack', description: 'Updated list', pluginIds: [] } })
+    expect(changedCollection.json().collection).toMatchObject({ name: 'Updated Harness stack', pluginIds: [] })
+
+    const detail = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}` })
+    expect(detail.json().plugin.community).toMatchObject({ favoriteCount: 1, subscriptionCount: 1, reviewCount: 1, reviewScore: 4 })
+  })
+
+  it('binds new reviews to the current published revision', async () => {
+    const next = plugin(published.id, 'commit-two')
+    await accounts.ingestVerifiedPlugins('sync', [next])
+    const candidate = accounts.githubSnapshot(true).items.find(item => item.id === published.id)!
+    await accounts.moderatePlugin('admin', published.id, { revisionId: candidate.revisionId, status: 'approved' })
+    const before = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/reviews` })
+    expect(before.json().summary).toEqual({ count: 0, score: 0 })
+    const added = await app.inject({ method: 'POST', url: `/v1/plugins/${encodeURIComponent(published.id)}/reviews`, headers: { cookie: userCookie, origin }, payload: { rating: 5, body: 'Confirmed again on the new published revision.' } })
+    expect(added.json().review.revisionId).toBe(candidate.revisionId)
   })
 
   it('blocks relations and reviews for pending or unknown plugins', async () => {

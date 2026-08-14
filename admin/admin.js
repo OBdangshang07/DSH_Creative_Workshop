@@ -138,9 +138,10 @@ document.querySelectorAll('[data-view]').forEach(button => button.addEventListen
 document.getElementById('logoutButton').addEventListener('click', async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { location.replace('/login/'); } });
 
 try {
-  const [auth, health] = await Promise.all([api('/auth/me'), fetch('/api/health/ready').then(response => response.ok)]);
+  const [auth, health] = await Promise.all([api('/auth/me'), fetch('/api/health/ready').then(async response => ({ ok: response.ok, body: response.ok ? await response.json() : null }))]);
   if (!auth.authenticated || auth.user.role !== 'admin') throw Object.assign(new Error('需要管理员权限'), { status: 403 });
   document.getElementById('adminIdentity').textContent = `${auth.user.username} · 管理员`;
-  const status = document.getElementById('healthStatus'); status.className = `health ${health ? 'online' : 'offline'}`; status.innerHTML = `<i></i> API ${health ? '运行正常' : '就绪检查失败'}`;
+  const status = document.getElementById('healthStatus'); status.className = `health ${health.ok ? 'online' : 'offline'}`; status.innerHTML = `<i></i> API ${health.ok ? '运行正常' : '就绪检查失败'}`;
+  document.getElementById('appVersion').textContent = health.body?.version ? `v${health.body.version}` : '版本未知';
   const initial = titles[location.hash.slice(1)] ? location.hash.slice(1) : 'overview'; switchView(initial);
 } catch (error) { showFailure(error); }

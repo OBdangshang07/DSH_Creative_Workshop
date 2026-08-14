@@ -38,11 +38,13 @@ export interface UserCollection {
 export interface GitHubReview {
   id: string
   pluginId: string
+  revisionId: string
   authorId: string
   authorName: string
   rating: number
   body: string
   createdAt: string
+  updatedAt: string
 }
 
 export interface GitHubPluginRecord {
@@ -64,6 +66,8 @@ export interface GitHubPluginRecord {
   topics: string[]
   kind: string
   surfaces: string[]
+  declaredDependencies?: string[]
+  dshDependencies?: string[]
   source: 'github-topic'
   securityReviewed: false
   verification: PluginVerification
@@ -151,7 +155,40 @@ interface LegacyData {
   pluginModeration?: Record<string, Omit<PluginModeration, 'revisionId'>>
   audit?: Array<{ id: string; actorId: string; action: string; target: string; at: string }>
   collections?: UserCollection[]
-  githubReviews?: GitHubReview[]
+  githubReviews?: Array<Omit<GitHubReview, 'revisionId' | 'updatedAt'> & Partial<Pick<GitHubReview, 'revisionId' | 'updatedAt'>>>
+}
+
+export interface PluginCommunity {
+  favoriteCount: number
+  subscriptionCount: number
+  reviewCount: number
+  reviewScore: number
+}
+
+export interface PluginDependencyView {
+  packageName: string
+  resolved: boolean
+  pluginId?: string
+  name?: string
+}
+
+export interface CatalogQuery {
+  q?: string
+  status?: string
+  kind?: string
+  surface?: string
+  topic?: string
+  author?: string
+  language?: string
+  license?: string
+  sort?: 'stars' | 'recent' | 'name' | 'rating' | 'subscriptions'
+  page?: number
+  pageSize?: number
+}
+
+export interface ReviewQuery {
+  page?: number
+  pageSize?: number
 }
 
 type SqlRow = Record<string, unknown>
@@ -304,6 +341,34 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS audit_at_idx ON audit_logs(at DESC);
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(1, datetime('now'));
     `)
+    const reviewColumns = (this.database.prepare('PRAGMA table_info(reviews)').all() as SqlRow[]).map(row => String(row.name))
+    if (!reviewColumns.includes('revision_id')) {
+      this.transaction(() => this.database.exec(`
+        DROP TABLE IF EXISTS reviews_v2;
+        CREATE TABLE reviews_v2(
+          id TEXT PRIMARY KEY, plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+          revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+          author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, author_name TEXT NOT NULL,
+          rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5), body TEXT NOT NULL,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+          UNIQUE(revision_id, author_id)
+        );
+        INSERT INTO reviews_v2(id,plugin_id,revision_id,author_id,author_name,rating,body,created_at,updated_at)
+          SELECT rv.id,rv.plugin_id,COALESCE(p.published_revision_id,p.latest_revision_id),rv.author_id,rv.author_name,
+                 rv.rating,rv.body,rv.created_at,rv.created_at
+          FROM reviews rv JOIN plugins p ON p.id=rv.plugin_id
+          WHERE COALESCE(p.published_revision_id,p.latest_revision_id) IS NOT NULL;
+        DROP TABLE reviews;
+        ALTER TABLE reviews_v2 RENAME TO reviews;
+      `))
+    }
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS favorites_plugin_idx ON favorites(plugin_id);
+      CREATE INDEX IF NOT EXISTS subscriptions_plugin_idx ON subscriptions(plugin_id);
+      CREATE INDEX IF NOT EXISTS collection_items_plugin_idx ON collection_items(plugin_id);
+      CREATE INDEX IF NOT EXISTS reviews_plugin_revision_idx ON reviews(plugin_id, revision_id, updated_at DESC);
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, datetime('now'));
+    `)
   }
 
   private async importLegacyIfNeeded(): Promise<void> {
@@ -346,8 +411,11 @@ export class AccountStore {
       }
       for (const review of legacy.githubReviews ?? []) {
         if (!this.pluginExists(review.pluginId) || !this.userExists(review.authorId)) continue
-        this.database.prepare('INSERT OR IGNORE INTO reviews VALUES(?,?,?,?,?,?,?)').run(
-          review.id, review.pluginId, review.authorId, review.authorName, review.rating, review.body, review.createdAt,
+        const revision = this.database.prepare('SELECT COALESCE(published_revision_id,latest_revision_id) AS revision_id FROM plugins WHERE id=?').get(review.pluginId) as SqlRow | undefined
+        if (revision?.revision_id === undefined || revision.revision_id === null) continue
+        this.database.prepare('INSERT OR IGNORE INTO reviews VALUES(?,?,?,?,?,?,?,?,?)').run(
+          review.id, review.pluginId, String(revision.revision_id), review.authorId, review.authorName,
+          review.rating, review.body, review.createdAt, review.updatedAt ?? review.createdAt,
         )
       }
       for (const audit of legacy.audit ?? []) this.database.prepare(
@@ -549,6 +617,25 @@ export class AccountStore {
   async toggleFavorite(userId: string, pluginId: string): Promise<string[]> { return this.toggleRelation('favorites', userId, pluginId) }
   async toggleSubscription(userId: string, pluginId: string): Promise<string[]> { return this.toggleRelation('subscriptions', userId, pluginId) }
 
+  userRelations(userId: string, relation: 'favorites' | 'subscriptions', query: { page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const rows = this.database.prepare(`SELECT rel.plugin_id,rel.created_at FROM ${relation} rel
+      JOIN plugins p ON p.id=rel.plugin_id JOIN moderation_decisions m ON m.revision_id=p.published_revision_id
+      WHERE rel.user_id=? AND m.status='approved' ORDER BY rel.created_at DESC LIMIT ? OFFSET ?`)
+      .all(userId, pageSize, (page - 1) * pageSize) as SqlRow[]
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM ${relation} rel
+      JOIN plugins p ON p.id=rel.plugin_id JOIN moderation_decisions m ON m.revision_id=p.published_revision_id
+      WHERE rel.user_id=? AND m.status='approved'`, userId)
+    return {
+      items: rows.flatMap(row => {
+        const plugin = this.publicPlugin(String(row.plugin_id))
+        return plugin === undefined ? [] : [{ plugin, savedAt: String(row.created_at) }]
+      }),
+      page, pageSize, total,
+    }
+  }
+
   private toggleRelation(table: 'favorites' | 'subscriptions', userId: string, pluginId: string): string[] {
     if (!this.isPublicPlugin(pluginId)) throw new Error('CATALOG_PLUGIN_NOT_PUBLIC')
     const exists = this.scalar(`SELECT COUNT(*) AS value FROM ${table} WHERE user_id=? AND plugin_id=?`, userId, pluginId) > 0
@@ -575,25 +662,80 @@ export class AccountStore {
     return collection
   }
 
+  async updateCollection(userId: string, collectionId: string, update: { name: string; description: string; pluginIds: string[] }): Promise<UserCollection | undefined> {
+    const existing = this.database.prepare('SELECT id FROM collections WHERE id=? AND owner_id=?').get(collectionId, userId) as SqlRow | undefined
+    if (existing === undefined) return undefined
+    const pluginIds = [...new Set(update.pluginIds)].filter(id => this.isPublicPlugin(id)).slice(0, 100)
+    const updatedAt = nowIso()
+    this.transaction(() => {
+      this.database.prepare('UPDATE collections SET name=?,description=?,updated_at=? WHERE id=? AND owner_id=?').run(
+        update.name, update.description, updatedAt, collectionId, userId,
+      )
+      this.database.prepare('DELETE FROM collection_items WHERE collection_id=?').run(collectionId)
+      pluginIds.forEach((pluginId, position) => this.database.prepare('INSERT INTO collection_items VALUES(?,?,?)').run(collectionId, pluginId, position))
+    })
+    return this.userCollections(userId).find(collection => collection.id === collectionId)
+  }
+
   async deleteCollection(userId: string, collectionId: string): Promise<boolean> {
     return Number(this.database.prepare('DELETE FROM collections WHERE id=? AND owner_id=?').run(collectionId, userId).changes) > 0
   }
 
-  reviews(pluginId: string): GitHubReview[] {
-    return (this.database.prepare('SELECT * FROM reviews WHERE plugin_id=? ORDER BY created_at DESC').all(pluginId) as SqlRow[]).map(row => ({
-      id: String(row.id), pluginId: String(row.plugin_id), authorId: String(row.author_id), authorName: String(row.author_name), rating: Number(row.rating), body: String(row.body), createdAt: String(row.created_at),
-    }))
+  reviews(pluginId: string, query: ReviewQuery = {}) {
+    const plugin = this.publicPluginBase(pluginId)
+    if (plugin === undefined) return undefined
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 20))
+    const revisionId = plugin.revisionId
+    const total = this.scalar('SELECT COUNT(*) AS value FROM reviews WHERE plugin_id=? AND revision_id=?', pluginId, revisionId)
+    const aggregate = this.database.prepare('SELECT AVG(rating) AS score FROM reviews WHERE plugin_id=? AND revision_id=?').get(pluginId, revisionId) as SqlRow | undefined
+    const rows = this.database.prepare('SELECT * FROM reviews WHERE plugin_id=? AND revision_id=? ORDER BY updated_at DESC LIMIT ? OFFSET ?')
+      .all(pluginId, revisionId, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return {
+      summary: { count: total, score: total === 0 ? 0 : Math.round(Number(aggregate?.score ?? 0) * 10) / 10 },
+      items: rows.map(row => this.reviewFromRow(row)), page, pageSize, total, revisionId,
+    }
   }
 
   async addReview(userId: string, pluginId: string, rating: number, body: string): Promise<GitHubReview> {
-    if (!this.isPublicPlugin(pluginId)) throw new Error('CATALOG_PLUGIN_NOT_PUBLIC')
+    const plugin = this.publicPluginBase(pluginId)
+    if (plugin === undefined) throw new Error('CATALOG_PLUGIN_NOT_PUBLIC')
     const user = this.database.prepare('SELECT username FROM users WHERE id=?').get(userId) as SqlRow
-    const existing = this.database.prepare('SELECT id FROM reviews WHERE plugin_id=? AND author_id=?').get(pluginId, userId) as SqlRow | undefined
-    const review: GitHubReview = { id: existing === undefined ? `ghreview_${randomUUID()}` : String(existing.id), pluginId, authorId: userId, authorName: String(user.username), rating, body, createdAt: nowIso() }
-    this.database.prepare(`INSERT INTO reviews VALUES(?,?,?,?,?,?,?) ON CONFLICT(plugin_id,author_id) DO UPDATE SET rating=excluded.rating,body=excluded.body,created_at=excluded.created_at`).run(
-      review.id, pluginId, userId, review.authorName, rating, body, review.createdAt,
+    const existing = this.database.prepare('SELECT id,created_at FROM reviews WHERE revision_id=? AND author_id=?').get(plugin.revisionId, userId) as SqlRow | undefined
+    const at = nowIso()
+    const review: GitHubReview = {
+      id: existing === undefined ? `ghreview_${randomUUID()}` : String(existing.id), pluginId, revisionId: plugin.revisionId,
+      authorId: userId, authorName: String(user.username), rating, body,
+      createdAt: existing === undefined ? at : String(existing.created_at), updatedAt: at,
+    }
+    this.database.prepare(`INSERT INTO reviews VALUES(?,?,?,?,?,?,?,?,?)
+      ON CONFLICT(revision_id,author_id) DO UPDATE SET author_name=excluded.author_name,rating=excluded.rating,body=excluded.body,updated_at=excluded.updated_at`).run(
+      review.id, pluginId, review.revisionId, userId, review.authorName, rating, body, review.createdAt, review.updatedAt,
     )
     return review
+  }
+
+  pluginState(userId: string, pluginId: string) {
+    const plugin = this.publicPluginBase(pluginId)
+    if (plugin === undefined) return undefined
+    const collectionRows = this.database.prepare(`SELECT c.id FROM collections c JOIN collection_items ci ON ci.collection_id=c.id
+      WHERE c.owner_id=? AND ci.plugin_id=? ORDER BY c.updated_at DESC`).all(userId, pluginId) as SqlRow[]
+    const reviewRow = this.database.prepare('SELECT * FROM reviews WHERE revision_id=? AND author_id=?').get(plugin.revisionId, userId) as SqlRow | undefined
+    return {
+      pluginId, revisionId: plugin.revisionId,
+      favorited: this.scalar('SELECT COUNT(*) AS value FROM favorites WHERE user_id=? AND plugin_id=?', userId, pluginId) > 0,
+      subscribed: this.scalar('SELECT COUNT(*) AS value FROM subscriptions WHERE user_id=? AND plugin_id=?', userId, pluginId) > 0,
+      collectionIds: collectionRows.map(row => String(row.id)),
+      review: reviewRow === undefined ? null : this.reviewFromRow(reviewRow),
+    }
+  }
+
+  private reviewFromRow(row: SqlRow): GitHubReview {
+    return {
+      id: String(row.id), pluginId: String(row.plugin_id), revisionId: String(row.revision_id),
+      authorId: String(row.author_id), authorName: String(row.author_name), rating: Number(row.rating), body: String(row.body),
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }
   }
 
   private pluginFromRevision(row: SqlRow): GitHubPluginRecord & { revisionId: string; moderation: PluginModeration; publication: 'published' | 'candidate' } {
@@ -606,28 +748,100 @@ export class AccountStore {
     return { ...record, revisionId: String(row.revision_id), moderation, publication: String(row.published_revision_id) === String(row.revision_id) ? 'published' : 'candidate' }
   }
 
-  githubSnapshot(admin = false, query: { q?: string; status?: string; kind?: string; page?: number; pageSize?: number } = {}) {
-    const page = Math.max(1, query.page ?? 1)
-    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? (admin ? 25 : 100)))
-    const revisionColumn = admin ? 'p.latest_revision_id' : 'p.published_revision_id'
-    const clauses = admin ? ['1=1'] : ["m.status='approved'", 'p.published_revision_id IS NOT NULL']
-    const params: Array<string | number> = []
-    if (query.status) { clauses.push('m.status=?'); params.push(query.status) }
-    if (query.q) { clauses.push('(p.full_name LIKE ? OR r.record_json LIKE ?)'); params.push(`%${query.q}%`, `%${query.q}%`) }
-    if (query.kind) { clauses.push("json_extract(r.record_json,'$.kind')=?"); params.push(query.kind) }
-    const from = `FROM plugins p JOIN plugin_revisions r ON r.id=${revisionColumn} LEFT JOIN moderation_decisions m ON m.revision_id=r.id WHERE ${clauses.join(' AND ')}`
-    const total = this.scalar(`SELECT COUNT(*) AS value ${from}`, ...params)
-    const rows = this.database.prepare(`SELECT p.published_revision_id,r.id AS revision_id,r.record_json,m.status AS moderation_status,m.featured,m.reason,m.updated_at AS moderation_updated_at,m.updated_by ${from} ORDER BY m.featured DESC,json_extract(r.record_json,'$.stars') DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
-    return { syncedAt: this.latestCompletedSyncAt(), items: rows.map(row => this.pluginFromRevision(row)), page, pageSize, total }
-  }
-
-  publicPlugin(pluginId: string) {
+  private publicPluginBase(pluginId: string) {
     const row = this.database.prepare(`SELECT p.published_revision_id,r.id AS revision_id,r.record_json,
       m.status AS moderation_status,m.featured,m.reason,m.updated_at AS moderation_updated_at,m.updated_by
       FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
       JOIN moderation_decisions m ON m.revision_id=r.id
       WHERE p.id=? AND m.status='approved'`).get(pluginId) as SqlRow | undefined
     return row === undefined ? undefined : this.pluginFromRevision(row)
+  }
+
+  private communityFor(pluginId: string, revisionId: string): PluginCommunity {
+    const aggregate = this.database.prepare('SELECT COUNT(*) AS count,AVG(rating) AS score FROM reviews WHERE plugin_id=? AND revision_id=?').get(pluginId, revisionId) as SqlRow | undefined
+    const reviewCount = Number(aggregate?.count ?? 0)
+    return {
+      favoriteCount: this.scalar('SELECT COUNT(*) AS value FROM favorites WHERE plugin_id=?', pluginId),
+      subscriptionCount: this.scalar('SELECT COUNT(*) AS value FROM subscriptions WHERE plugin_id=?', pluginId),
+      reviewCount,
+      reviewScore: reviewCount === 0 ? 0 : Math.round(Number(aggregate?.score ?? 0) * 10) / 10,
+    }
+  }
+
+  private dependencyViews(plugin: GitHubPluginRecord): PluginDependencyView[] {
+    return (plugin.dshDependencies ?? []).map(packageName => {
+      const row = this.database.prepare(`SELECT p.published_revision_id,r.id AS revision_id,r.record_json,
+        m.status AS moderation_status,m.featured,m.reason,m.updated_at AS moderation_updated_at,m.updated_by
+        FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
+        JOIN moderation_decisions m ON m.revision_id=r.id
+        WHERE json_extract(r.record_json,'$.packageName')=? AND m.status='approved' LIMIT 1`).get(packageName) as SqlRow | undefined
+      if (row === undefined) return { packageName, resolved: false }
+      const dependency = this.pluginFromRevision(row)
+      return { packageName, resolved: true, pluginId: dependency.id, name: dependency.name }
+    })
+  }
+
+  private withCommunity<T extends GitHubPluginRecord & { revisionId: string }>(plugin: T) {
+    return { ...plugin, community: this.communityFor(plugin.id, plugin.revisionId) }
+  }
+
+  private publicFacets() {
+    const base = `FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
+      JOIN moderation_decisions m ON m.revision_id=r.id WHERE m.status='approved'`
+    const grouped = (expression: string) => (this.database.prepare(`SELECT ${expression} AS value,COUNT(*) AS count ${base} GROUP BY value ORDER BY count DESC,value`).all() as SqlRow[])
+      .filter(row => row.value !== null && String(row.value) !== '').map(row => ({ value: String(row.value), count: Number(row.count) }))
+    const arrayValues = (path: string) => (this.database.prepare(`SELECT item.value AS value,COUNT(*) AS count
+      FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
+      JOIN moderation_decisions m ON m.revision_id=r.id JOIN json_each(r.record_json,?) item
+      WHERE m.status='approved' GROUP BY item.value ORDER BY count DESC,item.value`).all(path) as SqlRow[])
+      .map(row => ({ value: String(row.value), count: Number(row.count) }))
+    return {
+      kinds: grouped("json_extract(r.record_json,'$.kind')"),
+      authors: grouped("json_extract(r.record_json,'$.author')"),
+      languages: grouped("json_extract(r.record_json,'$.language')"),
+      licenses: grouped("json_extract(r.record_json,'$.license')"),
+      surfaces: arrayValues('$.surfaces'), topics: arrayValues('$.topics'),
+    }
+  }
+
+  githubSnapshot(admin = false, query: CatalogQuery = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? (admin ? 25 : 100)))
+    const revisionColumn = admin ? 'p.latest_revision_id' : 'p.published_revision_id'
+    const clauses = admin ? ['1=1'] : ["m.status='approved'", 'p.published_revision_id IS NOT NULL']
+    const params: Array<string | number> = []
+    if (query.status) { clauses.push('m.status=?'); params.push(query.status) }
+    if (query.q) {
+      clauses.push(`(p.full_name LIKE ? OR json_extract(r.record_json,'$.name') LIKE ? OR json_extract(r.record_json,'$.description') LIKE ? OR json_extract(r.record_json,'$.packageName') LIKE ?)`)
+      params.push(...Array.from({ length: 4 }, () => `%${query.q}%`))
+    }
+    if (query.kind) { clauses.push("json_extract(r.record_json,'$.kind')=?"); params.push(query.kind) }
+    if (query.surface) { clauses.push("EXISTS(SELECT 1 FROM json_each(r.record_json,'$.surfaces') WHERE value=?)"); params.push(query.surface) }
+    if (query.topic) { clauses.push("EXISTS(SELECT 1 FROM json_each(r.record_json,'$.topics') WHERE value=?)"); params.push(query.topic) }
+    if (query.author) { clauses.push("json_extract(r.record_json,'$.author')=? COLLATE NOCASE"); params.push(query.author) }
+    if (query.language) { clauses.push("json_extract(r.record_json,'$.language')=? COLLATE NOCASE"); params.push(query.language) }
+    if (query.license) { clauses.push("json_extract(r.record_json,'$.license')=? COLLATE NOCASE"); params.push(query.license) }
+    const from = `FROM plugins p JOIN plugin_revisions r ON r.id=${revisionColumn} LEFT JOIN moderation_decisions m ON m.revision_id=r.id WHERE ${clauses.join(' AND ')}`
+    const total = this.scalar(`SELECT COUNT(*) AS value ${from}`, ...params)
+    const publicOrder: Record<NonNullable<CatalogQuery['sort']>, string> = {
+      stars: "json_extract(r.record_json,'$.stars') DESC",
+      recent: "json_extract(r.record_json,'$.pushedAt') DESC",
+      name: "json_extract(r.record_json,'$.name') COLLATE NOCASE ASC",
+      rating: '(SELECT COALESCE(AVG(rv.rating),0) FROM reviews rv WHERE rv.revision_id=r.id) DESC',
+      subscriptions: '(SELECT COUNT(*) FROM subscriptions sub WHERE sub.plugin_id=p.id) DESC',
+    }
+    const order = admin ? "json_extract(r.record_json,'$.stars') DESC" : publicOrder[query.sort ?? 'stars']
+    const rows = this.database.prepare(`SELECT p.published_revision_id,r.id AS revision_id,r.record_json,m.status AS moderation_status,m.featured,m.reason,m.updated_at AS moderation_updated_at,m.updated_by ${from} ORDER BY m.featured DESC,${order} LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
+    const items = rows.map(row => {
+      const plugin = this.pluginFromRevision(row)
+      return admin ? plugin : this.withCommunity(plugin)
+    })
+    return { syncedAt: this.latestCompletedSyncAt(), items, page, pageSize, total, ...(admin ? {} : { facets: this.publicFacets() }) }
+  }
+
+  publicPlugin(pluginId: string) {
+    const plugin = this.publicPluginBase(pluginId)
+    return plugin === undefined ? undefined : { ...this.withCommunity(plugin), dependencies: this.dependencyViews(plugin) }
   }
 
   private latestCompletedSyncAt(): string | undefined {

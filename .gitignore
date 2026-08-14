@@ -9,6 +9,8 @@ coverage/
 *.log
 .visual-check/
 .edge-profile/
+test-results/
+playwright-report/
 .env
 .env.*
 !.env.example
