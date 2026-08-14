@@ -17,6 +17,8 @@ test('card opens an internal, reload-safe detail page with an explicit GitHub ha
   await page.keyboard.press('Enter')
   await expect(page).toHaveURL(/\/plugin\/\?id=/)
   await expect(page.locator('.dsh-detail-summary h1')).toHaveText(title || '')
+  await expect(page.getByRole('heading', { name: '当前版本更新' })).toBeVisible()
+  await expect(page.locator('.dsh-release-notes').first()).toContainText('traceable browser-test release')
   const github = page.getByRole('link', { name: /前往 GitHub/ })
   await expect(github).toHaveAttribute('target', '_blank')
   await expect(github).toHaveAttribute('rel', /noopener/)
@@ -72,6 +74,27 @@ test('catalog and detail remain usable on a narrow mobile viewport', async ({ pa
   await page.locator('.dsh-card').first().click()
   await expect(page.getByRole('link', { name: /前往 GitHub/ })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+})
+
+test('activity filters expose platform and plugin release-note snapshots', async ({ page }) => {
+  await page.goto('/?view=activity')
+  await expect(page.getByRole('heading', { name: '更新动态' })).toBeVisible()
+  await page.getByRole('button', { name: '平台更新' }).click()
+  await expect(page.locator('.dsh-activity-list')).toContainText('DSH Creative Workshop v1.1.2')
+  await expect(page.locator('.dsh-activity-item details')).toContainText('动态可信化与用户能力补全')
+  await page.getByRole('button', { name: '插件更新' }).click()
+  await expect(page.locator('.dsh-activity-item').first()).toContainText('traceable browser-test release')
+})
+
+test('a user can change their username with password verification', async ({ page }) => {
+  await login(page, 'browser-profile', 'BrowserProfilePassword123')
+  await page.locator('#dshAccountButton').click()
+  await page.getByRole('button', { name: '账号名', exact: true }).click()
+  await page.locator('#changeUsernameForm input[name="username"]').fill('browser-renamed')
+  await page.locator('#changeUsernameForm input[name="currentPassword"]').fill('BrowserProfilePassword123')
+  await page.locator('#changeUsernameForm').getByRole('button', { name: '确认修改' }).click()
+  await expect(page.locator('#dshAccountButton')).toContainText('browser-renamed')
+  await expect(page.locator('#dshDialogBody')).toContainText('下次可修改时间')
 })
 
 test('homepage shows live presence and a signed-in user can publish discussions', async ({ page }) => {

@@ -41,7 +41,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.1', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.2', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -67,6 +67,50 @@ describe('marketplace account and administration API', () => {
     expect(me.json().user).toMatchObject({ username: 'normal-user', role: 'user', status: 'active' })
     const sessions = await app.inject({ method: 'GET', url: '/v1/me/sessions', headers: { cookie: userCookie } })
     expect(sessions.json().items[0]).toMatchObject({ current: true, userAgent: 'Vitest Browser' })
+  })
+
+  it('publishes structured platform and plugin revision history into filtered activity', async () => {
+    const releases = await app.inject({ method: 'GET', url: '/v1/releases' })
+    const revisions = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/revisions` })
+    const platformActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=platform' })
+    const pluginActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=plugin' })
+    expect(releases.json().items[0]).toMatchObject({ version: '1.1.2', title: expect.any(String), changes: expect.any(Array) })
+    expect(revisions.json().items[0]).toMatchObject({ revisionId: expect.any(String), release: { sourceType: 'missing', summary: '作者未提供更新日志。' } })
+    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.2', changes: expect.any(Array) } })
+    expect(pluginActivity.json().items[0]).toMatchObject({ type: 'plugin.published', payload: { release: { sourceType: 'missing' } } })
+  })
+
+  it('changes usernames safely while preserving current-name attribution and old-name reservation', async () => {
+    const registered = await app.inject({ method: 'POST', url: '/v1/auth/register', headers: { origin }, payload: { username: 'rename-user', email: 'rename@example.test', password: 'RenamePassword123' } })
+    const cookie = registered.headers['set-cookie']!.split(';', 1)[0]!
+    const thread = await app.inject({ method: 'POST', url: '/v1/discussions', headers: { cookie, origin }, payload: { title: 'Username attribution check', body: 'This discussion verifies current username attribution after a rename.' } })
+    const changed = await app.inject({ method: 'PATCH', url: '/v1/me/profile', headers: { cookie, origin, 'x-request-id': 'rename-request' }, payload: { username: 'renamed-user', currentPassword: 'RenamePassword123' } })
+    expect(changed.statusCode).toBe(200)
+    expect(changed.json().user.username).toBe('renamed-user')
+    const visible = await app.inject({ method: 'GET', url: `/v1/discussions/${thread.json().thread.id}` })
+    expect(visible.json().thread.authorName).toBe('renamed-user')
+    const cooldown = await app.inject({ method: 'PATCH', url: '/v1/me/profile', headers: { cookie, origin }, payload: { username: 'renamed-again', currentPassword: 'RenamePassword123' } })
+    expect(cooldown.statusCode).toBe(409)
+    expect(cooldown.json().error.code).toBe('AUTH_USERNAME_COOLDOWN')
+    const reserved = await app.inject({ method: 'POST', url: '/v1/auth/register', headers: { origin }, payload: { username: 'rename-user', email: 'takeover@example.test', password: 'TakeoverPassword123' } })
+    expect(reserved.statusCode).toBe(409)
+    const history = await app.inject({ method: 'GET', url: `/v1/admin/users/${changed.json().user.id}/username-history`, headers: { cookie: adminCookie } })
+    expect(history.json().profile.history[0]).toMatchObject({ oldUsername: 'rename-user', newUsername: 'renamed-user' })
+    await app.inject({ method: 'DELETE', url: `/v1/discussions/${thread.json().thread.id}`, headers: { cookie, origin } })
+  })
+
+  it('persists notification preferences, saved searches and discussion subscriptions', async () => {
+    const preferences = await app.inject({ method: 'PATCH', url: '/v1/me/notification-preferences', headers: { cookie: userCookie, origin }, payload: { pluginUpdates: false, discussionReplies: true, platformReleases: false } })
+    expect(preferences.json().preferences).toMatchObject({ pluginUpdates: false, discussionReplies: true, collectionUpdates: true, platformReleases: false })
+    const saved = await app.inject({ method: 'POST', url: '/v1/me/saved-searches', headers: { cookie: userCookie, origin }, payload: { name: 'Web bundles', query: { kind: 'bundle', surface: 'web', sort: 'recent' } } })
+    expect(saved.statusCode).toBe(201)
+    expect((await app.inject({ method: 'GET', url: '/v1/me/saved-searches', headers: { cookie: userCookie } })).json().items[0]).toMatchObject({ name: 'Web bundles', query: { kind: 'bundle', surface: 'web', sort: 'recent' } })
+    const thread = await app.inject({ method: 'POST', url: '/v1/discussions', headers: { cookie: userCookie, origin }, payload: { title: 'Subscription state check', body: 'A real thread used to verify explicit follow and unfollow state.' } })
+    const threadId = thread.json().thread.id as string
+    expect((await app.inject({ method: 'GET', url: `/v1/me/discussions/${threadId}/subscription`, headers: { cookie: userCookie } })).json()).toEqual({ subscribed: true })
+    expect((await app.inject({ method: 'PUT', url: `/v1/me/discussions/${threadId}/subscription`, headers: { cookie: userCookie, origin }, payload: { subscribed: false } })).json()).toEqual({ subscribed: false })
+    await app.inject({ method: 'DELETE', url: `/v1/discussions/${threadId}`, headers: { cookie: userCookie, origin } })
+    await app.inject({ method: 'PATCH', url: '/v1/me/notification-preferences', headers: { cookie: userCookie, origin }, payload: { pluginUpdates: true, platformReleases: true } })
   })
 
   it('rejects duplicate identities, weak passwords and cross-site mutations', async () => {

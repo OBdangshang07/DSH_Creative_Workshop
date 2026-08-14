@@ -1,0 +1,65 @@
+.release-admin-list {
+  display: grid;
+  gap: 9px;
+}
+.release-editor {
+  border: 1px solid var(--line);
+  background: #0a1118;
+}
+.release-editor > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  cursor: pointer;
+}
+.release-editor > summary span {
+  display: grid;
+  gap: 5px;
+}
+.release-editor > summary strong { color: #fff; }
+.release-editor > summary small { color: var(--muted); }
+.release-editor > summary code {
+  color: var(--blue);
+  font: 10px ui-monospace, monospace;
+}
+.release-editor form {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  padding: 15px;
+  border-top: 1px solid var(--line);
+}
+.release-editor label {
+  display: grid;
+  gap: 6px;
+  color: #9aabba;
+  font-size: 10px;
+}
+.release-editor label:nth-child(2),
+.release-editor label:nth-child(3),
+.release-editor label:nth-child(4) { grid-column: 1 / -1; }
+.release-editor input,
+.release-editor textarea {
+  width: 100%;
+  border: 1px solid var(--line2);
+  color: #d7e2eb;
+  background: #080e14;
+  padding: 9px;
+  font: 11px inherit;
+}
+.release-editor textarea {
+  min-height: 84px;
+  resize: vertical;
+}
+.release-editor .button { justify-self: start; }
+.release-editor form > .actions { grid-column: 1 / -1; }
+@media (width <= 760px) {
+  .release-editor form { grid-template-columns: 1fr; }
+  .release-editor label { grid-column: 1 !important; }
+  .release-editor > summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

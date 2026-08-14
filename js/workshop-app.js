@@ -3,7 +3,7 @@ import { api, escapeHtml, formatTime } from '/js/account-api.js';
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.1',
+  version: '1.1.2',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },
@@ -14,6 +14,7 @@ const state = {
   unreadNotifications: 0,
   presenceTimer: null,
   communityPage: 1,
+  activityCategory: '',
 };
 
 const icons = {
@@ -269,7 +270,7 @@ function catalogHtml(result) {
             <option value="subscriptions" ${state.filters.sort === 'subscriptions' ? 'selected' : ''}>订阅数量</option>
             <option value="name" ${state.filters.sort === 'name' ? 'selected' : ''}>名称</option>
           </select></label>
-          <div class="dsh-filter-actions"><button class="dsh-button primary" type="submit">应用筛选</button><button class="dsh-button" id="resetFilters" type="button">重置</button></div>
+          <div class="dsh-filter-actions"><button class="dsh-button primary" type="submit">应用筛选</button><button class="dsh-button" id="resetFilters" type="button">重置</button>${state.user ? '<button class="dsh-button" id="saveCurrentSearch" type="button">保存搜索</button>' : ''}</div>
         </form>
       </aside>
       <section class="dsh-catalog-main">
@@ -314,6 +315,13 @@ function wireCatalog() {
   document.getElementById('resetFilters')?.addEventListener('click', () => {
     state.filters = { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 };
     syncCatalogUrl(false); loadCatalog();
+  });
+  document.getElementById('saveCurrentSearch')?.addEventListener('click', async () => {
+    const name = prompt('为当前搜索命名（2–60 字）');
+    if (!name) return;
+    const query = Object.fromEntries(Object.entries(state.filters).filter(([key, value]) => key !== 'page' && value && !(key === 'sort' && value === 'stars')).map(([key, value]) => [key, String(value)]));
+    try { await api('/me/saved-searches', { method: 'POST', body: JSON.stringify({ name: name.trim(), query }) }); toast('当前搜索已保存。'); }
+    catch (error) { showError(error); }
   });
   main.querySelectorAll('[data-page]').forEach(button => button.addEventListener('click', () => {
     state.filters.page = Number(button.dataset.page); syncCatalogUrl(false); loadCatalog(); window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -366,6 +374,27 @@ function codeRow(label, value) {
   return `<div class="dsh-code-row"><span>${escapeHtml(label)}</span><code>${escapeHtml(value ?? '—')}</code></div>`;
 }
 
+const changeLabels = { added: '新增', changed: '调整', fixed: '修复', removed: '移除', security: '安全', other: '其他' };
+const sourceLabels = { declared: '插件声明', github_release: 'GitHub Release', changelog: 'CHANGELOG', commit: 'Commit 摘要', missing: '作者未提供', manual: '管理员整理', workshop_manifest: '平台发布清单' };
+
+function releaseNotesHtml(release, options = {}) {
+  if (!release) return '<div class="dsh-empty compact">该 Revision 暂无更新日志记录。</div>';
+  const sourceUrl = release.sourceUrl ? safeExternalUrl(release.sourceUrl) : '#';
+  const compareUrl = release.compareUrl ? safeExternalUrl(release.compareUrl) : '#';
+  return `<div class="dsh-release-notes ${release.sourceType === 'missing' ? 'missing' : ''}">
+    <div class="dsh-release-heading"><div><p class="dsh-kicker">${escapeHtml(release.version ? `VERSION ${release.version}` : 'REVISION CHANGELOG')}</p><h3>${escapeHtml(release.title)}</h3></div><span class="dsh-source-pill">${escapeHtml(sourceLabels[release.sourceType] || release.sourceType)}</span></div>
+    <p class="dsh-release-summary">${escapeHtml(release.summary)}</p>
+    ${release.breakingChanges?.length ? `<div class="dsh-breaking"><strong>不兼容变更</strong><ul>${release.breakingChanges.map(item => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>` : ''}
+    ${release.changes?.length ? `<ul class="dsh-change-list">${release.changes.map(item => `<li><span data-change-type="${attribute(item.type)}">${escapeHtml(changeLabels[item.type] || item.type)}</span>${escapeHtml(item.text)}</li>`).join('')}</ul>` : release.sourceType === 'missing' ? '<p class="dsh-release-empty">未从插件声明、GitHub Release、CHANGELOG 或 Commit 信息中取得可展示内容。</p>' : ''}
+    <div class="dsh-release-links">${compareUrl !== '#' ? `<a href="${attribute(compareUrl)}" target="_blank" rel="noopener noreferrer">比较固定 Commit ↗</a>` : ''}${sourceUrl !== '#' ? `<a href="${attribute(sourceUrl)}" target="_blank" rel="noopener noreferrer">查看更新来源 ↗</a>` : ''}${release.collectedAt ? `<span>采集于 ${formatTime(release.collectedAt)}</span>` : ''}</div>
+  </div>`;
+}
+
+function revisionHistoryHtml(revisions) {
+  if (!revisions?.length) return '<div class="dsh-empty compact">暂无公开版本历史。</div>';
+  return `<div class="dsh-revision-list">${revisions.map((revision, index) => `<details ${index === 0 ? 'open' : ''}><summary><span>${escapeHtml(revision.version || revision.commitSha.slice(0, 12))}</span><small>${formatTime(revision.publishedAt)} · ${escapeHtml(revision.commitSha.slice(0, 12))}</small></summary>${releaseNotesHtml(revision.release)}</details>`).join('')}</div>`;
+}
+
 function reviewsHtml(reviews, pluginState) {
   const own = pluginState?.review;
   return `
@@ -379,7 +408,7 @@ function reviewsHtml(reviews, pluginState) {
     ${reviews.total > reviews.pageSize ? `<nav class="dsh-pagination"><button class="dsh-button" data-review-page="${reviews.page - 1}" ${reviews.page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${reviews.page} 页</span><button class="dsh-button" data-review-page="${reviews.page + 1}" ${reviews.page * reviews.pageSize >= reviews.total ? 'disabled' : ''}>下一页</button></nav>` : ''}`;
 }
 
-function detailHtml(plugin, reviews, pluginState) {
+function detailHtml(plugin, reviews, pluginState, revisions) {
   const verification = plugin.verification || {};
   const community = plugin.community || {};
   const favorited = Boolean(pluginState?.favorited || state.user?.favorites?.includes(plugin.id));
@@ -416,6 +445,8 @@ function detailHtml(plugin, reviews, pluginState) {
           <section class="dsh-panel"><h2>Bundle 验证证据</h2><div class="dsh-code-list">
             ${codeRow('Revision', plugin.revisionId)}${codeRow('固定 Commit', verification.commitSha)}${codeRow('package.json', verification.packageJsonPath)}${codeRow('Cordis Patch', verification.patchPath)}${codeRow('Entry IDs', (verification.entryIds || []).join(', ') || '—')}${codeRow('Module Specifiers', (verification.moduleSpecifiers || []).join(', ') || '—')}${codeRow('验证器', verification.verifierVersion || '—')}${codeRow('验证时间', formatTime(verification.checkedAt))}
           </div></section>
+          <section class="dsh-panel"><h2>当前版本更新</h2>${releaseNotesHtml(plugin.release)}</section>
+          <section class="dsh-panel"><h2>Revision 历史</h2>${revisionHistoryHtml(revisions)}</section>
           <section class="dsh-panel" id="communityReviews"><h2>社区评价</h2>${reviewsHtml(reviews, pluginState)}</section>
         </div>
         <aside class="dsh-detail-side">
@@ -429,12 +460,12 @@ function detailHtml(plugin, reviews, pluginState) {
 async function renderPlugin(id) {
   main.innerHTML = '<div class="dsh-loading"><div class="dsh-skeleton"></div><p>正在加载插件详情…</p></div>';
   try {
-    const requests = [api(`/plugins/${encodeURIComponent(id)}`), api(`/plugins/${encodeURIComponent(id)}/reviews?page=${state.reviewPage}&pageSize=20`)];
+    const requests = [api(`/plugins/${encodeURIComponent(id)}`), api(`/plugins/${encodeURIComponent(id)}/reviews?page=${state.reviewPage}&pageSize=20`), api(`/plugins/${encodeURIComponent(id)}/revisions`)];
     if (state.user) requests.push(api(`/me/plugins/${encodeURIComponent(id)}/state`));
-    const [pluginResult, reviews, userState] = await Promise.all(requests);
+    const [pluginResult, reviews, revisionResult, userState] = await Promise.all(requests);
     const plugin = pluginResult.plugin;
     state.currentPlugin = plugin;
-    main.innerHTML = detailHtml(plugin, reviews, userState?.state || null);
+    main.innerHTML = detailHtml(plugin, reviews, userState?.state || null, revisionResult.items);
     wireDetail(plugin, userState?.state || null);
     document.title = `${plugin.name} · DSH Creative Workshop`;
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -482,7 +513,7 @@ async function toggleDetailRelation(relation, pluginId) {
 }
 
 function accountNav(view) {
-  const items = [['overview','概览'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['collections','合集'],['sessions','设备会话'],['security','安全']];
+  const items = [['overview','概览'],['profile','账号名'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['searches','保存搜索'],['collections','合集'],['sessions','设备会话'],['security','安全']];
   return `<nav class="dsh-account-nav">${items.map(([id,label]) => `<button class="dsh-button ${id === view ? 'active' : ''}" data-account-view="${id}" type="button">${label}</button>`).join('')}</nav>`;
 }
 
@@ -502,8 +533,10 @@ async function renderAccount(view) {
   wireAccountNav();
   try {
     if (view === 'overview') renderAccountOverview(body, view);
+    else if (view === 'profile') await renderProfile(body);
     else if (view === 'notifications') await renderNotifications(body);
     else if (view === 'favorites' || view === 'subscriptions') await renderRelations(body, view);
+    else if (view === 'searches') await renderSavedSearches(body);
     else if (view === 'collections') await renderCollections(body);
     else if (view === 'sessions') await renderSessions(body);
     else renderSecurity(body);
@@ -518,21 +551,56 @@ function renderAccountOverview(body, view) {
   document.getElementById('logoutAccount')?.addEventListener('click', logout);
 }
 
+async function renderProfile(body) {
+  const { profile } = await api('/me/profile');
+  const cooling = profile.nextChangeAt && Date.parse(profile.nextChangeAt) > Date.now();
+  body.innerHTML = `${accountNav('profile')}<section class="dsh-panel"><h2>修改账号名</h2><p class="dsh-section-copy">修改时需要验证当前密码。每 30 天只能修改一次，旧账号名会保留 90 天，防止被他人立即注册。</p><form class="dsh-form-grid" id="changeUsernameForm"><label class="dsh-field">新账号名<input name="username" value="${attribute(profile.username)}" minlength="3" maxlength="32" pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,31}" ${cooling ? 'disabled' : ''} required></label><label class="dsh-field">当前密码<input name="currentPassword" type="password" autocomplete="current-password" ${cooling ? 'disabled' : ''} required></label><button class="dsh-button primary" type="submit" ${cooling ? 'disabled' : ''}>确认修改</button></form><p class="dsh-message" id="profileMessage">${cooling ? `下次可修改时间：${formatTime(profile.nextChangeAt)}` : '允许字母、数字、点、下划线和连字符，首字符必须是字母或数字。'}</p></section>${profile.history.length ? `<section class="dsh-panel"><h2>最近修改记录</h2><div class="dsh-list">${profile.history.map(item => `<div class="dsh-list-item"><div><h3>${escapeHtml(item.oldUsername)} → ${escapeHtml(item.newUsername)}</h3><p>${formatTime(item.changedAt)} · 旧名保留至 ${formatTime(item.reservedUntil)}</p></div></div>`).join('')}</div></section>` : ''}`;
+  wireAccountNav();
+  document.getElementById('changeUsernameForm')?.addEventListener('submit', async event => {
+    event.preventDefault(); const data = new FormData(event.currentTarget); const message = document.getElementById('profileMessage');
+    try {
+      const result = await api('/me/profile', { method: 'PATCH', body: JSON.stringify({ username: String(data.get('username')).trim(), currentPassword: String(data.get('currentPassword')) }) });
+      state.user = result.user; updateIdentity(); toast('账号名已更新。'); await renderProfile(body);
+    } catch (error) { message.className = 'dsh-message error'; message.textContent = error.message; }
+  });
+}
+
+async function renderSavedSearches(body) {
+  const result = await api('/me/saved-searches');
+  body.innerHTML = `${accountNav('searches')}<div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item"><div><h3>${escapeHtml(item.name)}</h3><p>${Object.entries(item.query).map(([key,value]) => `${escapeHtml(key)}=${escapeHtml(value)}`).join(' · ') || '默认目录条件'} · ${formatTime(item.updatedAt)}</p></div><div class="dsh-list-actions"><button class="dsh-button primary" data-apply-search="${attribute(item.id)}" type="button">应用</button><button class="dsh-button danger" data-delete-search="${attribute(item.id)}" type="button">删除</button></div></div>`).join('') : '<div class="dsh-empty">尚未保存搜索条件。可在目录筛选区保存当前组合。</div>'}</div>`;
+  wireAccountNav();
+  body.querySelectorAll('[data-apply-search]').forEach(button => button.addEventListener('click', () => {
+    const selected = result.items.find(item => item.id === button.dataset.applySearch); if (!selected) return;
+    state.filters = { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1, ...selected.query };
+    closeDialog(); navigateCatalog(true);
+  }));
+  body.querySelectorAll('[data-delete-search]').forEach(button => button.addEventListener('click', async () => { try { await api(`/me/saved-searches/${encodeURIComponent(button.dataset.deleteSearch)}`, { method: 'DELETE' }); await renderSavedSearches(body); } catch (error) { showError(error); } }));
+}
+
 function notificationText(item) {
-  if (item.type === 'plugin.updated') return `你订阅的 ${item.payload.name || '插件'} 发布了新 Revision`;
+  if (item.type === 'plugin.updated') return `你订阅的 ${item.payload.name || '插件'} 发布了新 Revision${item.payload.release?.summary ? `：${item.payload.release.summary}` : ''}`;
   if (item.type === 'discussion.reply') return `${item.payload.authorName || '有用户'} 回复了讨论“${item.payload.threadTitle || ''}”`;
+  if (item.type === 'collection.updated') return `合集“${item.payload.name || ''}”的治理状态已更新为 ${item.payload.status === 'hidden' ? '隐藏' : '可见'}`;
+  if (item.type === 'workshop.release') return `工坊 v${item.payload.version || ''} 发布：${item.payload.summary || item.payload.title || ''}`;
   return String(item.payload.message || item.type);
 }
 
 async function renderNotifications(body) {
-  const result = await api('/me/notifications?pageSize=100');
+  const [result, preferenceResult] = await Promise.all([api('/me/notifications?pageSize=100'), api('/me/notification-preferences')]);
+  const preferences = preferenceResult.preferences;
   state.unreadNotifications = result.unread;
   updateIdentity();
-  body.innerHTML = `${accountNav('notifications')}<div class="dsh-detail-actions" style="padding:0 0 12px"><button class="dsh-button" id="markAllNotifications" type="button" ${result.unread ? '' : 'disabled'}>全部标为已读</button></div><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item ${item.readAt ? '' : 'unread'}"><div><h3>${escapeHtml(notificationText(item))}</h3><p>${formatTime(item.createdAt)}${item.readAt ? '' : ' · 未读'}</p></div><div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-notification-plugin="${attribute(item.pluginId)}" type="button">查看插件</button>` : ''}${item.threadId ? `<button class="dsh-button" data-notification-thread="${attribute(item.threadId)}" type="button">查看讨论</button>` : ''}</div></div>`).join('') : '<div class="dsh-empty">暂时没有通知。</div>'}</div>`;
+  body.innerHTML = `${accountNav('notifications')}<section class="dsh-panel"><div class="dsh-panel-title-row"><div><h2>通知偏好</h2><p class="dsh-section-copy">当前仅发送站内通知，不会向外部邮箱推送。</p></div></div><form class="dsh-preference-grid" id="notificationPreferences"><label><input type="checkbox" name="pluginUpdates" ${preferences.pluginUpdates ? 'checked' : ''}>插件版本更新</label><label><input type="checkbox" name="discussionReplies" ${preferences.discussionReplies ? 'checked' : ''}>关注讨论的新回复</label><label><input type="checkbox" name="collectionUpdates" ${preferences.collectionUpdates ? 'checked' : ''}>公开合集治理状态</label><label><input type="checkbox" name="platformReleases" ${preferences.platformReleases ? 'checked' : ''}>平台版本发布</label><button class="dsh-button primary" type="submit">保存偏好</button></form></section><div class="dsh-detail-actions" style="padding:0 0 12px"><button class="dsh-button" id="markAllNotifications" type="button" ${result.unread ? '' : 'disabled'}>全部标为已读</button></div><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item ${item.readAt ? '' : 'unread'}"><div><h3>${escapeHtml(notificationText(item))}</h3><p>${formatTime(item.createdAt)}${item.readAt ? '' : ' · 未读'}</p></div><div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-notification-plugin="${attribute(item.pluginId)}" type="button">查看插件</button>` : ''}${item.threadId ? `<button class="dsh-button" data-notification-thread="${attribute(item.threadId)}" type="button">查看讨论</button>` : ''}${item.payload.collectionId && item.payload.status !== 'hidden' ? `<button class="dsh-button" data-notification-collection="${attribute(item.payload.collectionId)}" type="button">查看合集</button>` : ''}</div></div>`).join('') : '<div class="dsh-empty">暂时没有通知。</div>'}</div>`;
   wireAccountNav();
+  document.getElementById('notificationPreferences')?.addEventListener('submit', async event => {
+    event.preventDefault(); const data = new FormData(event.currentTarget);
+    try { await api('/me/notification-preferences', { method: 'PATCH', body: JSON.stringify({ pluginUpdates: data.has('pluginUpdates'), discussionReplies: data.has('discussionReplies'), collectionUpdates: data.has('collectionUpdates'), platformReleases: data.has('platformReleases') }) }); toast('通知偏好已保存。'); }
+    catch (error) { showError(error); }
+  });
   document.getElementById('markAllNotifications')?.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); await renderNotifications(body); });
   body.querySelectorAll('[data-notification-plugin]').forEach(button => button.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); closeDialog(); navigatePlugin(button.dataset.notificationPlugin); }));
   body.querySelectorAll('[data-notification-thread]').forEach(button => button.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); closeDialog(); renderDiscussionDetail(button.dataset.notificationThread, true); }));
+  body.querySelectorAll('[data-notification-collection]').forEach(button => button.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); closeDialog(); renderPublicCollectionDetail(button.dataset.notificationCollection, true); }));
 }
 
 async function renderRelations(body, relation) {
@@ -674,14 +742,17 @@ async function renderDiscussionDetail(id, push = false) {
   activateHub('discussions');
   main.innerHTML = '<div class="dsh-loading">正在读取讨论内容…</div>';
   try {
-    const [{ thread }, replies] = await Promise.all([api(`/discussions/${encodeURIComponent(id)}`), api(`/discussions/${encodeURIComponent(id)}/replies?pageSize=100`)]);
-    main.innerHTML = `<div class="dsh-community-page"><nav class="dsh-breadcrumbs"><button id="backToDiscussions" type="button">讨论区</button><span>›</span><span>${escapeHtml(thread.title)}</span></nav><article class="dsh-thread-detail"><p class="dsh-kicker">${thread.pluginName ? escapeHtml(thread.pluginName) : '全站讨论'} · ${thread.status === 'locked' ? '已锁定' : '开放'}</p><h1>${escapeHtml(thread.title)}</h1><div class="dsh-thread-meta">${escapeHtml(thread.authorName)} · ${formatTime(thread.createdAt)}</div><p>${escapeHtml(thread.body)}</p><div class="dsh-list-actions">${thread.pluginId ? `<button class="dsh-button" id="openThreadPlugin" type="button">查看关联插件</button>` : ''}${state.user?.id === thread.authorId ? '<button class="dsh-button danger" id="deleteThread" type="button">删除主题</button>' : ''}${state.user && state.user.id !== thread.authorId ? '<button class="dsh-button" id="reportThread" type="button">举报</button>' : ''}</div></article>
+    const requests = [api(`/discussions/${encodeURIComponent(id)}`), api(`/discussions/${encodeURIComponent(id)}/replies?pageSize=100`)];
+    if (state.user) requests.push(api(`/me/discussions/${encodeURIComponent(id)}/subscription`));
+    const [{ thread }, replies, subscription] = await Promise.all(requests);
+    main.innerHTML = `<div class="dsh-community-page"><nav class="dsh-breadcrumbs"><button id="backToDiscussions" type="button">讨论区</button><span>›</span><span>${escapeHtml(thread.title)}</span></nav><article class="dsh-thread-detail"><p class="dsh-kicker">${thread.pluginName ? escapeHtml(thread.pluginName) : '全站讨论'} · ${thread.status === 'locked' ? '已锁定' : '开放'}</p><h1>${escapeHtml(thread.title)}</h1><div class="dsh-thread-meta">${escapeHtml(thread.authorName)} · ${formatTime(thread.createdAt)}</div><p>${escapeHtml(thread.body)}</p><div class="dsh-list-actions">${thread.pluginId ? `<button class="dsh-button" id="openThreadPlugin" type="button">查看关联插件</button>` : ''}${state.user ? `<button class="dsh-button ${subscription?.subscribed ? 'success' : ''}" id="toggleDiscussionSubscription" type="button">${subscription?.subscribed ? '已关注讨论' : '关注讨论'}</button>` : ''}${state.user?.id === thread.authorId ? '<button class="dsh-button danger" id="deleteThread" type="button">删除主题</button>' : ''}${state.user && state.user.id !== thread.authorId ? '<button class="dsh-button" id="reportThread" type="button">举报</button>' : ''}</div></article>
       <section class="dsh-panel"><h2>${replies.total} 条回复</h2><div class="dsh-review-list">${replies.items.length ? replies.items.map(reply => `<article class="dsh-review"><div class="dsh-review-head"><strong>${escapeHtml(reply.authorName)}</strong><span>${formatTime(reply.createdAt)}</span></div><div class="dsh-review-body">${reply.status === 'deleted' ? '<em>该回复已由作者删除。</em>' : escapeHtml(reply.body)}</div>${reply.status !== 'deleted' ? `<div class="dsh-list-actions" style="margin-top:8px">${state.user?.id === reply.authorId ? `<button class="dsh-button danger" data-delete-reply="${attribute(reply.id)}" type="button">删除</button>` : state.user ? `<button class="dsh-button" data-report-reply="${attribute(reply.id)}" type="button">举报</button>` : ''}</div>` : ''}</article>`).join('') : '<div class="dsh-empty">尚无回复。</div>'}</div></section>
       ${thread.status === 'locked' ? '<div class="dsh-verification-note">该讨论已由管理员锁定，不能继续回复。</div>' : state.user ? `<section class="dsh-panel"><h2>回复讨论</h2><form class="dsh-form-grid" id="replyForm"><label class="dsh-field wide">回复内容<textarea name="body" minlength="2" maxlength="3000" required></textarea></label><button class="dsh-button primary" type="submit">发布回复</button></form><p class="dsh-message" id="replyMessage"></p></section>` : '<div class="dsh-verification-note"><button class="dsh-button" id="loginForReply" type="button">登录后回复</button></div>'}</div>`;
     document.getElementById('backToDiscussions')?.addEventListener('click', () => renderDiscussions(true, thread.pluginId || null));
     document.getElementById('openThreadPlugin')?.addEventListener('click', () => navigatePlugin(thread.pluginId));
     document.getElementById('loginForReply')?.addEventListener('click', () => goLogin());
     document.getElementById('reportThread')?.addEventListener('click', () => reportContent('thread', thread.id));
+    document.getElementById('toggleDiscussionSubscription')?.addEventListener('click', async () => { try { const result = await api(`/me/discussions/${encodeURIComponent(thread.id)}/subscription`, { method: 'PUT', body: JSON.stringify({ subscribed: !subscription?.subscribed }) }); toast(result.subscribed ? '已关注讨论，新回复会进入站内通知。' : '已取消关注讨论。'); renderDiscussionDetail(thread.id, false); } catch (error) { showError(error); } });
     document.getElementById('deleteThread')?.addEventListener('click', async () => { if (!confirm('确认删除该讨论？')) return; await api(`/discussions/${encodeURIComponent(thread.id)}`, { method: 'DELETE' }); renderDiscussions(true, thread.pluginId || null); });
     document.getElementById('replyForm')?.addEventListener('submit', async event => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api(`/discussions/${encodeURIComponent(thread.id)}/replies`, { method: 'POST', body: JSON.stringify({ body: String(data.get('body')).trim() }) }); renderDiscussionDetail(thread.id, false); } catch (error) { document.getElementById('replyMessage').textContent = error.message; } });
     main.querySelectorAll('[data-delete-reply]').forEach(button => button.addEventListener('click', async () => { if (!confirm('确认删除该回复？')) return; await api(`/discussion-replies/${encodeURIComponent(button.dataset.deleteReply)}`, { method: 'DELETE' }); renderDiscussionDetail(thread.id, false); }));
@@ -731,18 +802,34 @@ async function renderGlobalReviews(push = false) {
 }
 
 function activityText(item) {
-  if (item.type === 'plugin.published') return `插件 ${item.payload.name || item.pluginId || ''} 发布了新的公开 Revision`;
+  if (item.type === 'plugin.published') return `插件 ${item.payload.name || item.pluginId || ''} 发布了${item.payload.release?.version ? ` ${item.payload.release.version}` : '新的公开 Revision'}`;
+  if (item.type === 'workshop.release.published') return `DSH Creative Workshop v${item.payload.version || ''} 发布`;
   if (item.type === 'collection.published') return `社区用户公开了合集 ${item.payload.name || ''}`;
   if (item.type === 'discussion.created') return `新讨论：${item.payload.title || ''}`;
   return item.type;
 }
 
+function activityRelease(item) {
+  if (item.payload.release) return item.payload.release;
+  if (item.type === 'workshop.release.published') return { version: item.payload.version, title: item.payload.title, summary: item.payload.summary, changes: item.payload.changes || [], breakingChanges: [], sourceType: 'workshop_manifest', collectedAt: item.payload.publishedAt || item.createdAt };
+  return null;
+}
+
+function activityCardHtml(item) {
+  const release = activityRelease(item);
+  return `<article class="dsh-activity-item ${release ? 'has-release' : ''}"><time>${formatTime(item.createdAt)}</time><strong>${escapeHtml(activityText(item))}</strong>${release ? `<details ${item.type === 'workshop.release.published' ? 'open' : ''}><summary>查看更新内容</summary>${releaseNotesHtml(release)}</details>` : ''}<div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-activity-plugin="${attribute(item.pluginId)}" type="button">插件详情</button>` : ''}${item.collectionId ? `<button class="dsh-button" data-activity-collection="${attribute(item.collectionId)}" type="button">合集详情</button>` : ''}${item.threadId ? `<button class="dsh-button" data-activity-thread="${attribute(item.threadId)}" type="button">讨论详情</button>` : ''}</div></article>`;
+}
+
 async function renderActivity(push = false) {
-  if (push) { state.communityPage = 1; history.pushState({}, '', '/?view=activity'); }
+  if (push) { state.communityPage = 1; state.activityCategory = ''; history.pushState({}, '', '/?view=activity'); }
+  else state.activityCategory = new URLSearchParams(location.search).get('category') || '';
   activateHub('news'); main.innerHTML = '<div class="dsh-loading">正在读取更新动态…</div>';
   try {
-    const result = await api(`/activity?page=${state.communityPage}&pageSize=25`);
-    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">WORKSHOP ACTIVITY</p><h2>更新动态</h2><p>由插件公开、合集发布和社区讨论产生的真实事件。</p></div><span class="dsh-result-meta">${result.total} 条动态</span></header><div class="dsh-activity-list">${result.items.length ? result.items.map(item => `<article class="dsh-activity-item"><time>${formatTime(item.createdAt)}</time><strong>${escapeHtml(activityText(item))}</strong><div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-activity-plugin="${attribute(item.pluginId)}" type="button">插件详情</button>` : ''}${item.collectionId ? `<button class="dsh-button" data-activity-collection="${attribute(item.collectionId)}" type="button">合集详情</button>` : ''}${item.threadId ? `<button class="dsh-button" data-activity-thread="${attribute(item.threadId)}" type="button">讨论详情</button>` : ''}</div></article>`).join('') : '<div class="dsh-empty">暂时没有动态。</div>'}</div>${communityPager(result, 'activity')}</div>`;
+    const category = state.activityCategory ? `&category=${encodeURIComponent(state.activityCategory)}` : '';
+    const result = await api(`/activity?page=${state.communityPage}&pageSize=25${category}`);
+    const filters = [['','全部'],['platform','平台更新'],['plugin','插件更新'],['discussion','讨论'],['collection','合集']];
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">WORKSHOP ACTIVITY</p><h2>更新动态</h2><p>插件与平台更新均展示发布时保存的更新日志快照、固定 Commit 与证据来源。</p></div><span class="dsh-result-meta">${result.total} 条动态</span></header><nav class="dsh-activity-filters" aria-label="动态分类">${filters.map(([value,label]) => `<button class="dsh-button ${state.activityCategory === value ? 'active' : ''}" data-activity-category="${value}" type="button">${label}</button>`).join('')}</nav><div class="dsh-activity-list">${result.items.length ? result.items.map(activityCardHtml).join('') : '<div class="dsh-empty">当前分类暂时没有动态。</div>'}</div>${communityPager(result, 'activity')}</div>`;
+    main.querySelectorAll('[data-activity-category]').forEach(button => button.addEventListener('click', () => { state.activityCategory = button.dataset.activityCategory; state.communityPage = 1; const params = new URLSearchParams({ view: 'activity' }); if (state.activityCategory) params.set('category', state.activityCategory); history.replaceState({}, '', `/?${params}`); renderActivity(false); }));
     main.querySelectorAll('[data-activity-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.activityPlugin)));
     main.querySelectorAll('[data-activity-collection]').forEach(button => button.addEventListener('click', () => renderPublicCollectionDetail(button.dataset.activityCollection, true)));
     main.querySelectorAll('[data-activity-thread]').forEach(button => button.addEventListener('click', () => renderDiscussionDetail(button.dataset.activityThread, true)));

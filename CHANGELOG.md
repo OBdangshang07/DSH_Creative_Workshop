@@ -2,6 +2,26 @@
 
 All notable changes to DSH Creative Workshop are recorded here.
 
+## [1.1.2] - 2026-08-14
+
+### Added
+
+- Traceable plugin revision changelogs with source evidence, fixed-commit comparisons, breaking-change notes and public version history.
+- Username changes protected by current-password verification, a 30-day cooldown, 90-day old-name reservation and administrator-visible audit history.
+- Activity category filters, notification preferences, discussion subscriptions and reusable saved catalog searches.
+- A structured workshop release manifest that publishes platform release notes into the activity and notification streams.
+
+### Changed
+
+- Reviews, discussions, replies and governance views now resolve the author's current username while retaining the original author snapshot for audit purposes.
+- Plugin approval notifications now carry the same immutable release-note snapshot shown in the public activity feed.
+- Version validation now checks the structured release manifest as part of the release contract.
+
+### Security
+
+- Changelog collection never executes repository code and clearly marks missing author-provided notes instead of generating unsupported claims.
+- Username changes require re-authentication and reserve previous identities to reduce impersonation risk.
+
 ## [1.1.1] - 2026-08-14
 
 ### Added

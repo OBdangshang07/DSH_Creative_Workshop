@@ -36,6 +36,21 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
     expect(plugin?.securityReviewed).toBe(false)
   })
 
+  it('collects a version-matched changelog without inventing missing entries', async () => {
+    const plugin = await verifyGitHubRepository(repository, undefined, fixtureFetch({
+      'package.json': JSON.stringify({ name: '@community/example-plugin', version: '1.2.0', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './cordis.patch.yml' } } }),
+      'cordis.patch.yml': '- insert:\n    - id: example\n      name: "@community/example-plugin"\n',
+      'CHANGELOG.md': '# Changelog\n\n## 1.2.0\n\nRelease summary for this fixed revision.\n\n### Added\n\n- Added a verified web entry.\n\n### Fixed\n\n- Fixed startup ordering.\n',
+    }))
+    expect(plugin).toMatchObject({
+      version: '1.2.0',
+      releaseNotes: {
+        sourceType: 'changelog', summary: 'Release summary for this fixed revision.',
+        changes: [{ type: 'added', text: 'Added a verified web entry.' }, { type: 'fixed', text: 'Fixed startup ordering.' }],
+      },
+    })
+  })
+
   it('finds multiple independently addressable Bundles in a monorepo', async () => {
     const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
       'packages/alpha/package.json': JSON.stringify({ name: '@community/alpha', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),

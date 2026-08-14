@@ -1,4 +1,4 @@
-# 当前 v1.1.1 实现
+# 当前 v1.1.2 实现
 
 ## 1. 范围
 
@@ -32,6 +32,8 @@ packages/
 GET  /health
 GET  /v1/plugins
 GET  /v1/plugins/:id
+GET  /v1/plugins/:id/revisions
+GET  /v1/plugins/:id/revisions/:revisionId
 GET  /v1/plugins/:id/reviews
 POST /v1/plugins/:id/reviews
 GET  /v1/presence/summary
@@ -47,9 +49,12 @@ GET  /v1/collections/:id
 POST /v1/collections/:id/clone
 GET  /v1/reviews
 GET  /v1/activity
+GET  /v1/releases
 POST /v1/auth/register
 POST /v1/auth/login
 GET  /v1/me/sessions
+GET  /v1/me/profile
+PATCH /v1/me/profile
 GET  /v1/me/favorites
 GET  /v1/me/subscriptions
 GET  /v1/me/plugins/:id/state
@@ -61,9 +66,16 @@ PATCH /v1/me/collections/:id
 DELETE /v1/me/collections/:id
 GET  /v1/me/notifications
 POST /v1/me/notifications/read
+GET  /v1/me/notification-preferences
+PATCH /v1/me/notification-preferences
+GET  /v1/me/saved-searches
+POST /v1/me/saved-searches
+PUT  /v1/me/discussions/:id/subscription
 GET  /v1/admin/overview
 GET  /v1/admin/plugins
 PATCH /v1/admin/plugins/:id
+PATCH /v1/admin/plugins/:id/revisions/:revisionId/changelog
+POST /v1/admin/plugins/:id/revisions/:revisionId/changelog/retry
 POST /v1/admin/sync-runs
 GET  /v1/admin/sync-runs/:id
 GET  /v1/admin/users
@@ -75,7 +87,9 @@ GET  /v1/admin/audit
 
 公开目录支持名称、描述、包名搜索，以及 kind、surface、topic、author、language、license 分面、排序和分页。管理端额外支持审核状态、用户角色/状态、社区内容状态、举报状态、审计操作和分页。社区评价要求登录，并由服务端绑定当前公开 Revision；同一用户对同一 Revision 只保留一条最新评价。收藏、订阅、合集和评价都只能引用当前公开插件。
 
-在线人数定义为过去 90 秒内有前台活动的浏览器：同一 Cookie 的多个标签页只计一次，Bot/Headless 客户端不计入，原始标识仅保存在进程内存中。SQLite 只保留五分钟聚合桶，用于管理端 24 小时峰值。讨论正文与回复只按纯文本输出；游客可读，登录用户可发帖、回复和举报。合集默认私有，只有用户明确公开且未被管理员隐藏时才进入合集广场。订阅者会在插件新 Revision 获批时收到幂等站内通知，讨论作者会在他人回复后收到通知。
+在线人数定义为过去 90 秒内有前台活动的浏览器：同一 Cookie 的多个标签页只计一次，Bot/Headless 客户端不计入，原始标识仅保存在进程内存中。SQLite 只保留五分钟聚合桶，用于管理端 24 小时峰值。讨论正文与回复只按纯文本输出；游客可读，登录用户可发帖、回复、关注和举报。合集默认私有，只有用户明确公开且未被管理员隐藏时才进入合集广场。用户可分别控制插件、讨论、合集和平台版本通知。
+
+插件 Revision 更新日志按插件结构化声明、GitHub Release、仓库 CHANGELOG、Commit 摘要的顺序采集，并保存来源、固定 Commit 范围和发布快照。没有可信内容时明确显示“作者未提供更新日志”。平台版本使用 `releases/v<version>.json` 作为结构化发布来源。
 
 ## 4. Local Companion
 
@@ -113,11 +127,11 @@ GET  /v1/operations/:id/events
 - `/plugin/?id=...`：站内插件二级详情，展示标准字段、固定 Commit 证据、声明依赖、动态社区数据和明确的 GitHub 外链。
 - `/?view=discussions` 与 `/discussion/?id=...`：真实讨论列表、发帖、回复、删除、举报与刷新可恢复详情。
 - `/collections/` 与 `/collection/?id=...`：公开合集广场、详情、复制和举报。
-- `/?view=reviews` 与 `/?view=activity`：全站评价和由公开 Revision、讨论、合集产生的动态。
+- `/?view=reviews` 与 `/?view=activity`：全站评价，以及可按平台、插件、讨论、合集筛选并展开更新日志的动态。
 - `/login/`：独立登录/注册、字段级错误、密码强度、提交状态和仅站内的 `returnTo`。
 - `/admin/`：独立管理控制台，包含实时在线/24h 峰值、目录治理统计、revision 证据、异步同步任务与候选失败原因、用户/Session 管理、社区内容/举报治理和带请求上下文的审计日志。
 
-普通用户中心提供收藏/订阅列表、合集创建/编辑/删除、当前插件加入合集、设备 Session 撤销和修改密码。首页、详情和用户中心不再保留“仅弹出成功提示”的模拟操作。
+普通用户中心提供账号名修改、通知偏好、保存搜索、收藏/订阅列表、合集创建/编辑/删除、设备 Session 撤销和修改密码。首页、详情和用户中心不再保留“仅弹出成功提示”的模拟操作。
 
 ## 6. 验证
 
