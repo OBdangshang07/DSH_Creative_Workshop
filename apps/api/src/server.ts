@@ -14,13 +14,14 @@ const bootstrapAdmin = process.env.WORKSHOP_ADMIN_PASSWORD === undefined ? undef
   email: process.env.WORKSHOP_ADMIN_EMAIL ?? 'admin@localhost.invalid',
   password: process.env.WORKSHOP_ADMIN_PASSWORD,
 }
+const githubToken = process.env.GITHUB_TOKEN?.trim()
 const app = await buildApi({
   allowedOrigins,
   dataFile: process.env.WORKSHOP_DATABASE_FILE ?? '/var/lib/dsh-workshop/workshop.sqlite',
   legacyDataFile: process.env.WORKSHOP_DATA_FILE ?? '/var/lib/dsh-workshop/data.json',
   logger: process.env.NODE_ENV === 'production',
   ...(bootstrapAdmin === undefined ? {} : { bootstrapAdmin }),
-  ...(process.env.GITHUB_TOKEN === undefined ? {} : { githubToken: process.env.GITHUB_TOKEN }),
+  ...(githubToken === undefined || githubToken === '' ? {} : { githubToken }),
 })
 
 try {

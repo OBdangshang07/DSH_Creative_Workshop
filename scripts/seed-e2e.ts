@@ -8,7 +8,7 @@ const fixture = (id: string, name: string, stars: number): GitHubPluginRecord =>
   url: `https://github.com/dsh-e2e/${id.split('.').at(-1)}`, stars, forks: 1, language: 'TypeScript', license: 'MIT',
   updatedAt: '2026-08-14T00:00:00Z', pushedAt: '2026-08-14T00:00:00Z', topics: ['dsh-plugin', 'browser-test'],
   kind: 'bundle', surfaces: ['web', 'headless'], declaredDependencies: ['@deepseek-ai/cordis'], dshDependencies: ['@deepseek-ai/cordis'],
-  version: '1.1.2', releaseNotes: { version: '1.1.2', title: `${name} 1.1.2`, summary: 'A traceable browser-test release for the fixed revision.', changes: [{ type: 'changed', text: 'Updated the verified browser-test bundle.' }], breakingChanges: [], sourceType: 'declared', sourceUrl: `https://github.com/dsh-e2e/${id.split('.').at(-1)}/releases/tag/v1.1.2`, collectedAt: '2026-08-14T00:00:00Z' },
+  version: '1.1.3', releaseNotes: { version: '1.1.3', title: `${name} 1.1.3`, summary: 'A traceable browser-test release for the fixed revision.', changes: [{ type: 'changed', text: 'Updated the verified browser-test bundle.' }], breakingChanges: [], sourceType: 'declared', sourceUrl: `https://github.com/dsh-e2e/${id.split('.').at(-1)}/releases/tag/v1.1.3`, collectedAt: '2026-08-14T00:00:00Z' },
   source: 'github-topic', securityReviewed: false,
   verification: { status: 'verified_bundle', commitSha: `${id.replaceAll('.', '')}commit`, packageJsonPath: 'package.json', patchPath: 'dsh.bundle.patch.yml', checkedAt: '2026-08-14T00:00:00Z', verifierVersion: '2.0.0', entryIds: ['e2e'], moduleSpecifiers: [name] },
 })

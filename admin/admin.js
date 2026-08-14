@@ -19,7 +19,7 @@ function toast(text, type = '') {
 }
 
 function badge(status, text) {
-  const labels = { approved: '已公开', pending: '待审核', hidden: '已隐藏', rejected: '已拒绝', active: '启用', disabled: '停用', completed: '已完成', partially_failed: '部分失败', failed: '失败', queued: '排队中', discovering: '发现候选', verifying: '结构验证', verified: '已验证', open: '开放', locked: '已锁定', visible: '可见', resolved: '已处理', dismissed: '已驳回', thread: '讨论', reply: '回复', collection: '合集', review: '评价' };
+  const labels = { approved: '已公开', pending: '待审核', hidden: '已隐藏', rejected: '已拒绝', deferred: '已延后', active: '启用', disabled: '停用', completed: '已完成', partially_failed: '待继续', failed: '失败', queued: '排队中', discovering: '发现候选', verifying: '结构验证', verified: '已验证', open: '开放', locked: '已锁定', visible: '可见', resolved: '已处理', dismissed: '已驳回', thread: '讨论', reply: '回复', collection: '合集', review: '评价' };
   return `<span class="badge ${escapeHtml(status)}">${escapeHtml(text || labels[status] || status)}</span>`;
 }
 
@@ -64,11 +64,12 @@ async function renderOverview() {
       <article class="stat"><p>注册用户</p><strong>${overview.users}</strong></article>
       <article class="stat"><p>目录 Bundle</p><strong class="blue">${overview.plugins}</strong></article>
       <article class="stat"><p>公开展示</p><strong class="green">${overview.approvedPlugins}</strong></article>
-      <article class="stat"><p>等待审核</p><strong class="amber">${overview.pendingPlugins}</strong></article>
+      <article class="stat"><p>待审核 Revision</p><strong class="amber">${overview.pendingRevisions}</strong></article>
       <article class="stat"><p>公开讨论</p><strong>${overview.discussions}</strong></article>
       <article class="stat"><p>公开合集</p><strong>${overview.publicCollections}</strong></article>
       <article class="stat"><p>待处理举报</p><strong class="${overview.pendingReports ? 'amber' : 'green'}">${overview.pendingReports}</strong></article>
       <article class="stat"><p>平台版本</p><strong class="blue">${overview.releases}</strong></article>
+      <article class="stat"><p>GitHub 凭据</p><strong class="${overview.githubSync.authenticated ? 'green' : 'amber'}">${overview.githubSync.authenticated ? 'TOKEN' : 'ANON'}</strong><small>单批上限 ${overview.githubSync.batchLimit}</small></article>
     </div>
     <div class="grid-2">
       <section class="panel"><div class="panel-head"><div><h2>目录治理状态</h2><p>仅发布通过结构验证并经人工批准的 revision</p></div><button class="button" data-jump="plugins">进入审核</button></div><div class="panel-body status-list">
@@ -78,7 +79,7 @@ async function renderOverview() {
         <div class="status-row"><span>启用用户</span><div class="meter"><i style="width:${overview.users ? overview.activeUsers / overview.users * 100 : 0}%;background:var(--green)"></i></div><strong>${overview.activeUsers}/${overview.users}</strong></div>
       </div></section>
       <section class="panel"><div class="panel-head"><div><h2>最近同步</h2><p>${overview.githubSyncedAt ? formatTime(overview.githubSyncedAt) : '尚无完成记录'}</p></div><button class="button primary" data-jump="sync">同步目录</button></div><div class="panel-body">
-        ${latest ? `<p>${badge(latest.status)}</p><div class="sync-progress"><div><strong>${latest.discovered}</strong>候选</div><div><strong>${latest.verified}</strong>仓库通过</div><div><strong>${latest.rejected}</strong>拒绝</div><div><strong>${latest.failed}</strong>失败</div></div>` : '<div class="empty">尚未创建同步任务</div>'}
+        ${latest ? `<p>${badge(latest.status)}</p><div class="sync-progress"><div><strong>${latest.discovered}</strong>候选仓库</div><div><strong>${latest.verified}</strong>验证仓库</div><div><strong>${latest.bundlesFound}</strong>Bundle</div><div><strong>${latest.deferred}</strong>待续跑</div><div><strong>${latest.failed}</strong>失败</div></div>` : '<div class="empty">尚未创建同步任务</div>'}
       </div></section>
     </div>
     <section class="panel" style="margin-top:16px"><div class="panel-head"><div><h2>社区运行状态</h2><p>讨论、公开合集与用户举报均由真实后端存储和治理</p></div><button class="button ${overview.pendingReports ? 'primary' : ''}" data-jump="community">进入社区治理</button></div><div class="panel-body community-summary">
@@ -115,14 +116,17 @@ async function renderPlugins() {
 async function renderSync() {
   const result = await api('/admin/sync-runs');
   const active = result.items.find(run => ['queued', 'discovering', 'verifying'].includes(run.status));
-  main.innerHTML = `<section class="sync-hero"><div><h2>GitHub Topic → 固定 commit → 多 Bundle 验证</h2><p>Topic 仅用于发现候选。同步任务不会运行第三方代码，也不会因部分仓库失败而清空现有公开目录；所有新 revision 默认进入待审核状态。</p></div><button class="button primary" id="createSync" ${active ? 'disabled' : ''}>${active ? '同步进行中' : '创建同步任务'}</button></section>
-    <div class="table-wrap"><table><thead><tr><th>任务 / 时间</th><th>状态</th><th>处理结果</th><th>GitHub 配额</th><th>操作</th></tr></thead><tbody>${result.items.map(run => `<tr><td><code>${escapeHtml(run.id)}</code><br><small>${formatTime(run.createdAt)}${run.retryOf ? `<br>重试自 ${escapeHtml(run.retryOf)}` : ''}</small></td><td>${badge(run.status)}${run.error ? `<br><span class="reason">${escapeHtml(run.error)}</span>` : ''}</td><td><small>发现 ${run.discovered} · 通过 ${run.verified}<br>拒绝 ${run.rejected} · 失败 ${run.failed}</small></td><td><small>${run.githubRemaining ?? '—'}${run.githubResetAt ? `<br>重置 ${formatTime(run.githubResetAt)}` : ''}</small></td><td><div class="actions"><button data-sync-detail="${run.id}">查看明细</button>${['failed','partially_failed'].includes(run.status) ? `<button data-sync-retry="${run.id}">重试</button>` : ''}</div></td></tr><tr id="detail-${run.id}" hidden><td colspan="5"><div class="sync-detail">加载中…</div></td></tr>`).join('') || '<tr><td colspan="5" class="empty">尚无同步任务</td></tr>'}</tbody></table></div>`;
+  const credentialNote = result.github.authenticated
+    ? '<span class="sync-credential ok">已使用只读 GitHub Token · 单批最多 60 个仓库</span>'
+    : '<span class="sync-credential warning">匿名 GitHub API · 单批最多 15 个仓库；延后项请使用“继续同步”分批处理</span>';
+  main.innerHTML = `<section class="sync-hero"><div><h2>GitHub Topic → 固定 commit → 多 Bundle 验证</h2><p>Topic 仅用于候选发现，并交叉覆盖最近更新与高 Star 仓库。任务不会运行第三方代码；新 Revision 默认待审核，公开目录不会因部分失败而减少。</p>${credentialNote}</div><button class="button primary" id="createSync" ${active ? 'disabled' : ''}>${active ? '同步进行中' : '创建新同步'}</button></section>
+    <div class="table-wrap"><table><thead><tr><th>任务 / 时间</th><th>状态</th><th>处理结果</th><th>核心 API 余量</th><th>操作</th></tr></thead><tbody>${result.items.map(run => `<tr><td><code>${escapeHtml(run.id)}</code><br><small>${formatTime(run.createdAt)}${run.retryOf ? `<br>续跑自 ${escapeHtml(run.retryOf)}` : ''}<br>${run.githubAuthenticated ? 'Token' : '匿名'}</small></td><td>${badge(run.status)}${run.error ? `<br><span class="reason">${escapeHtml(run.error)}</span>` : ''}</td><td><small>候选仓库 ${run.discovered} · 验证仓库 ${run.verified}<br>Bundle ${run.bundlesFound} · 拒绝 ${run.rejected}<br>延后 ${run.deferred} · 失败 ${run.failed}</small></td><td><small>${run.githubRemaining ?? '—'}${run.githubResetAt ? `<br>重置 ${formatTime(run.githubResetAt)}` : ''}</small></td><td><div class="actions"><button data-sync-detail="${run.id}">查看明细</button>${run.deferred > 0 || run.failed > 0 ? `<button data-sync-retry="${run.id}">继续同步</button>` : ''}</div></td></tr><tr id="detail-${run.id}" hidden><td colspan="5"><div class="sync-detail">加载中…</div></td></tr>`).join('') || '<tr><td colspan="5" class="empty">尚无同步任务</td></tr>'}</tbody></table></div>`;
   document.getElementById('createSync').addEventListener('click', async event => { event.currentTarget.disabled = true; try { await api('/admin/sync-runs', { method: 'POST' }); toast('同步任务已创建，正在后台执行'); await renderSync(); } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; } });
   main.querySelectorAll('[data-sync-detail]').forEach(button => button.addEventListener('click', async () => {
     const row = document.getElementById(`detail-${button.dataset.syncDetail}`); row.hidden = !row.hidden; if (row.hidden || row.dataset.loaded) return;
     try { const run = await api(`/admin/sync-runs/${encodeURIComponent(button.dataset.syncDetail)}`); row.dataset.loaded = 'true'; row.querySelector('.sync-detail').innerHTML = run.candidates?.length ? `<div class="table-wrap"><table><thead><tr><th>候选仓库</th><th>Commit</th><th>结果</th><th>原因 / Bundle</th></tr></thead><tbody>${run.candidates.map(candidate => `<tr><td>${escapeHtml(candidate.repository)}</td><td><code>${escapeHtml(candidate.commitSha?.slice(0,12) || '—')}</code></td><td>${badge(candidate.status)}</td><td><small>${candidate.bundleCount} Bundle${candidate.reason ? `<br><span class="reason">${escapeHtml(candidate.reason)}</span>` : ''}</small></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">当前任务尚无候选明细</div>'; } catch (error) { row.querySelector('.sync-detail').textContent = error.message; }
   }));
-  main.querySelectorAll('[data-sync-retry]').forEach(button => button.addEventListener('click', async () => { try { await api(`/admin/sync-runs/${encodeURIComponent(button.dataset.syncRetry)}/retry`, { method: 'POST' }); toast('重试任务已创建'); await renderSync(); } catch (error) { toast(error.message, 'error'); } }));
+  main.querySelectorAll('[data-sync-retry]').forEach(button => button.addEventListener('click', async () => { try { await api(`/admin/sync-runs/${encodeURIComponent(button.dataset.syncRetry)}/retry`, { method: 'POST' }); toast('续跑任务已创建，仅处理失败或延后的候选'); await renderSync(); } catch (error) { toast(error.message, 'error'); } }));
   clearTimeout(state.syncTimer); if (active && state.view === 'sync') state.syncTimer = setTimeout(() => renderSync().catch(showFailure), 5000);
 }
 

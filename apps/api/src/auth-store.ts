@@ -221,7 +221,7 @@ export interface AuditRecord {
 export interface SyncCandidateInput {
   repository: string
   commitSha?: string
-  status: 'verified' | 'rejected' | 'failed'
+  status: 'verified' | 'rejected' | 'failed' | 'deferred'
   bundleCount: number
   reason?: string
   evidence?: Record<string, unknown>
@@ -235,6 +235,9 @@ export interface SyncRun {
   verified: number
   rejected: number
   failed: number
+  deferred: number
+  bundlesFound: number
+  githubAuthenticated: boolean
   error?: string
   githubRemaining?: number
   githubResetAt?: string
@@ -594,6 +597,18 @@ export class AccountStore {
       INSERT OR IGNORE INTO discussion_subscriptions(user_id,thread_id,created_at)
         SELECT author_id,thread_id,MIN(created_at) FROM discussion_replies GROUP BY author_id,thread_id;
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(4, datetime('now'));
+    `)
+    const syncRunColumns = (this.database.prepare('PRAGMA table_info(sync_runs)').all() as SqlRow[]).map(row => String(row.name))
+    if (!syncRunColumns.includes('deferred')) this.database.exec('ALTER TABLE sync_runs ADD COLUMN deferred INTEGER NOT NULL DEFAULT 0')
+    if (!syncRunColumns.includes('bundles_found')) this.database.exec('ALTER TABLE sync_runs ADD COLUMN bundles_found INTEGER NOT NULL DEFAULT 0')
+    if (!syncRunColumns.includes('github_authenticated')) this.database.exec('ALTER TABLE sync_runs ADD COLUMN github_authenticated INTEGER NOT NULL DEFAULT 0')
+    this.database.exec(`
+      CREATE INDEX IF NOT EXISTS sync_candidates_status_idx ON sync_candidates(run_id,status);
+      UPDATE sync_runs SET
+        bundles_found=COALESCE((SELECT SUM(bundle_count) FROM sync_candidates WHERE run_id=sync_runs.id),0),
+        deferred=COALESCE((SELECT COUNT(*) FROM sync_candidates WHERE run_id=sync_runs.id AND status='deferred'),0)
+      WHERE NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=5);
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, datetime('now'));
     `)
   }
 
@@ -1779,6 +1794,7 @@ export class AccountStore {
       admins: this.adminCount(), sessions: this.scalar('SELECT COUNT(*) AS value FROM sessions'), plugins: this.pluginCount(),
       approvedPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.published_revision_id WHERE m.status='approved'"),
       pendingPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.latest_revision_id WHERE m.status='pending'"),
+      pendingRevisions: this.scalar("SELECT COUNT(*) AS value FROM moderation_decisions WHERE status='pending'"),
       rejectedPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.latest_revision_id WHERE m.status IN ('rejected','hidden')"),
       discussions: this.scalar("SELECT COUNT(*) AS value FROM discussion_threads WHERE status IN ('open','locked')"),
       publicCollections: this.scalar("SELECT COUNT(*) AS value FROM collections WHERE visibility='public' AND moderation_status='visible'"),
@@ -1791,7 +1807,7 @@ export class AccountStore {
 
   createSyncRun(actorId: string, retryOf?: string, context: { ip?: string; requestId?: string } = {}): SyncRun {
     if (this.scalar("SELECT COUNT(*) AS value FROM sync_runs WHERE status IN ('queued','discovering','verifying')") > 0) throw new Error('SYNC_ALREADY_RUNNING')
-    const run: SyncRun = { id: `sync_${randomUUID()}`, actorId, status: 'queued', discovered: 0, verified: 0, rejected: 0, failed: 0, ...(retryOf === undefined ? {} : { retryOf }), createdAt: nowIso() }
+    const run: SyncRun = { id: `sync_${randomUUID()}`, actorId, status: 'queued', discovered: 0, verified: 0, rejected: 0, failed: 0, deferred: 0, bundlesFound: 0, githubAuthenticated: false, ...(retryOf === undefined ? {} : { retryOf }), createdAt: nowIso() }
     this.database.prepare('INSERT INTO sync_runs(id,actor_id,status,discovered,verified,rejected,failed,retry_of,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(
       run.id, actorId, run.status, 0, 0, 0, 0, retryOf ?? null, run.createdAt,
     )
@@ -1802,15 +1818,20 @@ export class AccountStore {
   updateSyncRun(id: string, update: Partial<Omit<SyncRun, 'id' | 'actorId' | 'createdAt'>>): void {
     const entries = Object.entries(update).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
-    const names: Record<string, string> = { githubRemaining: 'github_remaining', githubResetAt: 'github_reset_at', startedAt: 'started_at', finishedAt: 'finished_at' }
+    const names: Record<string, string> = { githubRemaining: 'github_remaining', githubResetAt: 'github_reset_at', bundlesFound: 'bundles_found', githubAuthenticated: 'github_authenticated', startedAt: 'started_at', finishedAt: 'finished_at' }
     const sets = entries.map(([key]) => `${names[key] ?? key}=?`).join(',')
-    this.database.prepare(`UPDATE sync_runs SET ${sets} WHERE id=?`).run(...entries.map(([, value]) => value as string | number), id)
+    this.database.prepare(`UPDATE sync_runs SET ${sets} WHERE id=?`).run(...entries.map(([, value]) => typeof value === 'boolean' ? Number(value) : value as string | number), id)
   }
 
   recordSyncCandidate(runId: string, candidate: SyncCandidateInput): void {
     this.database.prepare(`INSERT INTO sync_candidates VALUES(?,?,?,?,?,?,?) ON CONFLICT(run_id,repository) DO UPDATE SET commit_sha=excluded.commit_sha,status=excluded.status,bundle_count=excluded.bundle_count,reason=excluded.reason,evidence_json=excluded.evidence_json`).run(
       runId, candidate.repository, candidate.commitSha ?? null, candidate.status, candidate.bundleCount, candidate.reason ?? null, JSON.stringify(candidate.evidence ?? {}),
     )
+  }
+
+  retryableSyncRepositories(runId: string): string[] {
+    return (this.database.prepare("SELECT repository FROM sync_candidates WHERE run_id=? AND status IN ('failed','deferred') ORDER BY repository").all(runId) as SqlRow[])
+      .map(row => String(row.repository))
   }
 
   syncRun(id: string) {
@@ -1835,6 +1856,7 @@ export class AccountStore {
     return {
       id: String(row.id), actorId: String(row.actor_id), status: String(row.status) as SyncRunStatus,
       discovered: Number(row.discovered), verified: Number(row.verified), rejected: Number(row.rejected), failed: Number(row.failed),
+      deferred: Number(row.deferred), bundlesFound: Number(row.bundles_found), githubAuthenticated: Number(row.github_authenticated) === 1,
       ...(row.error === null ? {} : { error: String(row.error) }), ...(row.github_remaining === null ? {} : { githubRemaining: Number(row.github_remaining) }),
       ...(row.github_reset_at === null ? {} : { githubResetAt: String(row.github_reset_at) }), ...(row.retry_of === null ? {} : { retryOf: String(row.retry_of) }),
       createdAt: String(row.created_at), ...(row.started_at === null ? {} : { startedAt: String(row.started_at) }), ...(row.finished_at === null ? {} : { finishedAt: String(row.finished_at) }),

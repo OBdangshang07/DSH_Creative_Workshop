@@ -42,10 +42,18 @@ export interface GitHubSyncResult {
   verified: number
   rejected: number
   failed: number
+  deferred: number
+  bundlesFound: number
+  githubAuthenticated: boolean
   rateLimit: { remaining?: number; resetAt?: string }
 }
 
-export const VERIFIER_VERSION = '2.0.0'
+export interface GitHubSyncOptions {
+  repositories?: string[]
+  maxRepositories?: number
+}
+
+export const VERIFIER_VERSION = '2.1.0'
 
 const headers = (token?: string) => ({
   Accept: 'application/vnd.github+json', 'User-Agent': 'DSH-Creative-Workshop/0.2', 'X-GitHub-Api-Version': '2022-11-28',
@@ -61,12 +69,39 @@ function rateLimit(response: FetchResponse) {
   }
 }
 
+function apiFailure(stage: 'COMMIT_FETCH' | 'TREE_FETCH', response: FetchResponse) {
+  if (response.status !== 403) return `${stage}_${response.status}`
+  const limit = rateLimit(response)
+  return limit.remaining === 0 ? 'GITHUB_RATE_LIMIT_EXHAUSTED' : 'GITHUB_SECONDARY_RATE_LIMIT'
+}
+
+async function coreRateLimit(token: string | undefined, fetcher: Fetcher) {
+  try {
+    const response = await fetcher('https://api.github.com/rate_limit', { headers: headers(token), signal: AbortSignal.timeout(15_000) })
+    if (!response.ok) return {}
+    const body = await response.json() as { resources?: { core?: { remaining?: unknown; reset?: unknown } } }
+    const remaining = body.resources?.core?.remaining
+    const reset = body.resources?.core?.reset
+    return {
+      ...(typeof remaining === 'number' ? { remaining } : {}),
+      ...(typeof reset === 'number' ? { resetAt: new Date(reset * 1000).toISOString() } : {}),
+    }
+  } catch {
+    return {}
+  }
+}
+
 function validCandidate(repository: GitHubRepository): boolean {
   const topics = Array.isArray(repository.topics) ? repository.topics : []
   return repository.archived !== true && repository.fork !== true && topics.includes('dsh-plugin') &&
     repository.full_name !== 'deepseek-ai/deepseek-harness' && typeof repository.full_name === 'string' &&
     typeof repository.description === 'string' && repository.description.trim().length >= 12 &&
     typeof repository.html_url === 'string' && typeof repository.pushed_at === 'string' && typeof repository.default_branch === 'string'
+}
+
+function isDshDependency(name: string): boolean {
+  return name === 'cordis' || name.startsWith('@cordisjs/') ||
+    /(^|[/@_.-])(?:deepseek-ai|deepseek-harness|dsh)(?:[/@_.-]|$)/i.test(name)
 }
 
 function safeBundlePatch(packageJsonPath: string, patchSpecifier: unknown): string | undefined {
@@ -221,13 +256,35 @@ function dependenciesFor(manifest: PackageManifest): Set<string> {
 }
 
 export async function discoverGitHubTopic(token?: string, fetcher: Fetcher = fetch): Promise<GitHubDiscoveryResult> {
-  const url = new URL('https://api.github.com/search/repositories')
-  url.searchParams.set('q', 'topic:dsh-plugin archived:false fork:false')
-  url.searchParams.set('sort', 'stars'); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100')
-  const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
-  if (!response.ok) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
-  const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
-  return { repositories: (body.items ?? []).filter(validCandidate).slice(0, 60), totalCount: Number(body.total_count ?? 0), rateLimit: rateLimit(response) }
+  const resultSets: GitHubRepository[][] = []
+  let totalCount = 0
+  let latestRateLimit: { remaining?: number; resetAt?: string } = {}
+  for (const sort of ['updated', 'stars']) {
+    const url = new URL('https://api.github.com/search/repositories')
+    url.searchParams.set('q', 'topic:dsh-plugin archived:false fork:false')
+    url.searchParams.set('sort', sort); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100')
+    const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
+    if (!response.ok) {
+      if (resultSets.length === 0) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
+      continue
+    }
+    const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
+    resultSets.push((body.items ?? []).filter(validCandidate))
+    totalCount = Math.max(totalCount, Number(body.total_count ?? 0))
+    latestRateLimit = rateLimit(response)
+  }
+  const repositories: GitHubRepository[] = []
+  const seen = new Set<string>()
+  const longest = Math.max(0, ...resultSets.map(items => items.length))
+  for (let index = 0; index < longest && repositories.length < 120; index += 1) {
+    for (const items of resultSets) {
+      const repository = items[index]
+      if (repository === undefined || typeof repository.full_name !== 'string' || seen.has(repository.full_name.toLowerCase())) continue
+      seen.add(repository.full_name.toLowerCase())
+      repositories.push(repository)
+    }
+  }
+  return { repositories, totalCount, rateLimit: latestRateLimit }
 }
 
 export async function verifyGitHubRepositoryDetailed(repository: GitHubRepository, token?: string, fetcher: Fetcher = fetch): Promise<RepositoryVerificationResult> {
@@ -236,11 +293,11 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
   const fullName = repository.full_name as string
   const branch = repository.default_branch as string
   const commitResponse = await fetcher(`https://api.github.com/repos/${fullName}/commits/${encodeURIComponent(branch)}`, { headers: headers(token), signal: AbortSignal.timeout(20_000) })
-  if (!commitResponse.ok) return { repository: fullName, plugins: [], status: 'failed', reason: `COMMIT_FETCH_${commitResponse.status}`, evidence: {} }
+  if (!commitResponse.ok) return { repository: fullName, plugins: [], status: 'failed', reason: apiFailure('COMMIT_FETCH', commitResponse), evidence: { rateLimit: rateLimit(commitResponse) } }
   const commit = await commitResponse.json() as { sha?: unknown; html_url?: unknown; commit?: { message?: unknown } }
   if (typeof commit.sha !== 'string') return { repository: fullName, plugins: [], status: 'failed', reason: 'COMMIT_SHA_MISSING', evidence: {} }
   const treeResponse = await fetcher(`https://api.github.com/repos/${fullName}/git/trees/${commit.sha}?recursive=1`, { headers: headers(token), signal: AbortSignal.timeout(20_000) })
-  if (!treeResponse.ok) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'failed', reason: `TREE_FETCH_${treeResponse.status}`, evidence: {} }
+  if (!treeResponse.ok) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'failed', reason: apiFailure('TREE_FETCH', treeResponse), evidence: { rateLimit: rateLimit(treeResponse) } }
   const tree = await treeResponse.json() as RepositoryTree
   if (tree.truncated === true || !Array.isArray(tree.tree)) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'failed', reason: 'TREE_TRUNCATED_OR_INVALID', evidence: {} }
 
@@ -252,12 +309,19 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     if (!textCache.has(file)) textCache.set(file, await fetchText(fetcher, rawUrl(fullName, commit.sha as string, file), token))
     return textCache.get(file)
   }
-  let releases: GitHubRelease[] = []
-  try {
-    const releaseResponse = await fetcher(`https://api.github.com/repos/${fullName}/releases?per_page=20`, { headers: headers(token), signal: AbortSignal.timeout(15_000) })
-    if (releaseResponse.ok) { const value = await releaseResponse.json(); if (Array.isArray(value)) releases = value as GitHubRelease[] }
-  } catch {
-    releases = []
+  let releasesPromise: Promise<GitHubRelease[]> | undefined
+  const releases = () => {
+    releasesPromise ??= (async () => {
+      try {
+        const releaseResponse = await fetcher(`https://api.github.com/repos/${fullName}/releases?per_page=20`, { headers: headers(token), signal: AbortSignal.timeout(15_000) })
+        if (!releaseResponse.ok) return []
+        const value = await releaseResponse.json()
+        return Array.isArray(value) ? value as GitHubRelease[] : []
+      } catch {
+        return []
+      }
+    })()
+    return releasesPromise
   }
   const packagePaths = [...files.keys()].filter(file => file === 'package.json' || file.endsWith('/package.json'))
     .filter(file => !/(^|\/)(?:node_modules|vendor|fixtures?|examples?|tests?|archive)(\/|$)/i.test(file)).slice(0, 100)
@@ -284,13 +348,13 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     try { evidence = patchEvidence(parseYaml(patchText.replace(/!!js\s+/g, ''))) } catch { failures.push({ packageJsonPath, reason: 'PATCH_YAML_INVALID' }); continue }
     if (evidence === undefined) { failures.push({ packageJsonPath, reason: 'CORDIS_ENTRIES_MISSING' }); continue }
     const dependencies = dependenciesFor(manifest)
-    const dshDependencies = [...dependencies].filter(name => name.includes('deepseek-ai') || name.includes('cordis') || name.includes('dsh'))
+    const dshDependencies = [...dependencies].filter(isDshDependency)
     const kind = kindFor(manifest, patchText)
     const checkedAt = new Date().toISOString()
     const version = typeof manifest.version === 'string' && manifest.version.trim() !== '' ? manifest.version.trim().slice(0, 80) : undefined
     let releaseNotes = declaredNotes(manifest.dsh?.workshop?.releaseNotes, version, `${manifest.name} 更新`, checkedAt)
     if (releaseNotes === undefined) {
-      const release = releases.find(item => releaseMatches(item, version) && typeof item.body === 'string')
+      const release = (await releases()).find(item => releaseMatches(item, version) && typeof item.body === 'string')
       if (release !== undefined) releaseNotes = markdownNotes(
         String(release.body), version, cleanText(release.name, 180) ?? `${manifest.name} ${version ?? '更新'}`,
         'github_release', typeof release.html_url === 'string' ? release.html_url : undefined, checkedAt,
@@ -324,7 +388,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       status: 'verified_bundle', commitSha: commit.sha, packageJsonPath, patchPath, checkedAt,
       verifierVersion: VERIFIER_VERSION, entryIds: evidence.entryIds, moduleSpecifiers: evidence.moduleSpecifiers,
     }
-    if (dshDependencies.length === 0 && evidence.moduleSpecifiers.length === 0) {
+    if (dshDependencies.length === 0) {
       failures.push({ packageJsonPath, reason: 'DSH_DEPENDENCY_EVIDENCE_WEAK' })
       continue
     }
@@ -413,27 +477,59 @@ export async function collectGitHubReleaseNotes(plugin: GitHubPluginRecord, toke
   }
 }
 
-export async function fetchGitHubTopicDetailed(token?: string, fetcher: Fetcher = fetch, onProgress?: (progress: { phase: 'discovering' | 'verifying'; discovered: number; processed: number }) => void): Promise<GitHubSyncResult> {
+export async function fetchGitHubTopicDetailed(
+  token?: string,
+  fetcher: Fetcher = fetch,
+  onProgress?: (progress: { phase: 'discovering' | 'verifying'; discovered: number; processed: number }) => void,
+  options: GitHubSyncOptions = {},
+): Promise<GitHubSyncResult> {
   onProgress?.({ phase: 'discovering', discovered: 0, processed: 0 })
   const discovery = await discoverGitHubTopic(token, fetcher)
-  onProgress?.({ phase: 'verifying', discovered: discovery.repositories.length, processed: 0 })
+  const repositoryByName = new Map(discovery.repositories.flatMap(repository => typeof repository.full_name === 'string' ? [[repository.full_name.toLowerCase(), repository] as const] : []))
+  const requested = options.repositories?.map(repository => repository.toLowerCase())
+  const eligible = requested === undefined
+    ? discovery.repositories
+    : requested.flatMap(repository => repositoryByName.get(repository) ?? [])
+  const missing = requested === undefined ? [] : requested.filter(repository => !repositoryByName.has(repository))
+  const discovered = requested?.length ?? discovery.repositories.length
+  const before = await coreRateLimit(token, fetcher)
+  const configuredLimit = Math.max(0, options.maxRepositories ?? (token === undefined ? 15 : 60))
+  const rateLimitCapacity = before.remaining === undefined ? configuredLimit : Math.max(0, Math.floor((before.remaining - 5) / 3))
+  const processLimit = Math.min(configuredLimit, rateLimitCapacity)
+  const selected = eligible.slice(0, processLimit)
+  const deferredRepositories = eligible.slice(processLimit)
+  onProgress?.({ phase: 'verifying', discovered, processed: 0 })
   const results: RepositoryVerificationResult[] = []
   const batchSize = token === undefined ? 3 : 6
-  for (let index = 0; index < discovery.repositories.length; index += batchSize) {
-    const batch = await Promise.all(discovery.repositories.slice(index, index + batchSize).map(repository => verifyGitHubRepositoryDetailed(repository, token, fetcher).catch(cause => ({
+  for (let index = 0; index < selected.length; index += batchSize) {
+    const batch = await Promise.all(selected.slice(index, index + batchSize).map(repository => verifyGitHubRepositoryDetailed(repository, token, fetcher).catch(cause => ({
       repository: typeof repository.full_name === 'string' ? repository.full_name : 'unknown', plugins: [], status: 'failed' as const,
       reason: cause instanceof Error ? cause.message : 'UNKNOWN', evidence: {},
     }))))
     results.push(...batch)
-    onProgress?.({ phase: 'verifying', discovered: discovery.repositories.length, processed: results.length })
+    onProgress?.({ phase: 'verifying', discovered, processed: results.length })
   }
   const plugins = results.flatMap(result => result.plugins)
-  if (discovery.repositories.length > 0 && plugins.length === 0 && results.every(result => result.status === 'failed')) throw new Error('GITHUB_VERIFICATION_UNAVAILABLE')
+  const deferred: SyncCandidateInput[] = [
+    ...deferredRepositories.map(repository => ({
+      repository: String(repository.full_name), status: 'deferred' as const, bundleCount: 0,
+      reason: processLimit === 0 ? 'GITHUB_RATE_LIMIT_DEFERRED' : 'SYNC_BATCH_DEFERRED',
+      evidence: { githubAuthenticated: token !== undefined, ...(before.resetAt === undefined ? {} : { resetAt: before.resetAt }) },
+    })),
+    ...missing.map(repository => ({
+      repository, status: 'deferred' as const, bundleCount: 0, reason: 'CANDIDATE_NOT_IN_CURRENT_DISCOVERY', evidence: {},
+    })),
+  ]
+  const after = await coreRateLimit(token, fetcher)
   return {
-    plugins, discovered: discovery.repositories.length, verified: results.filter(result => result.status === 'verified').length,
+    plugins, discovered, verified: results.filter(result => result.status === 'verified').length,
     rejected: results.filter(result => result.status === 'rejected').length, failed: results.filter(result => result.status === 'failed').length,
-    candidates: results.map(result => ({ repository: result.repository, ...(result.commitSha === undefined ? {} : { commitSha: result.commitSha }), status: result.status, bundleCount: result.plugins.length, ...(result.reason === undefined ? {} : { reason: result.reason }), evidence: result.evidence })),
-    rateLimit: discovery.rateLimit,
+    deferred: deferred.length, bundlesFound: plugins.length, githubAuthenticated: token !== undefined,
+    candidates: [
+      ...results.map(result => ({ repository: result.repository, ...(result.commitSha === undefined ? {} : { commitSha: result.commitSha }), status: result.status, bundleCount: result.plugins.length, ...(result.reason === undefined ? {} : { reason: result.reason }), evidence: result.evidence })),
+      ...deferred,
+    ],
+    rateLimit: Object.keys(after).length > 0 ? after : Object.keys(before).length > 0 ? before : discovery.rateLimit,
   }
 }
 

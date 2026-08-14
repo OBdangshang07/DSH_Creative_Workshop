@@ -63,4 +63,37 @@ describe('asynchronous catalog synchronization', () => {
     expect(store.githubSnapshot(true, { q: 'community/valid' }).items[0]).toMatchObject({ moderation: { status: 'pending' }, verification: { commitSha: 'valid-fixed-sha' } })
     store.close()
   })
+
+  it('defers work to the available anonymous budget and retries only unfinished repositories', async () => {
+    const store = new AccountStore()
+    await store.initialize()
+    const fetcher: Fetcher = async input => {
+      const url = String(input)
+      if (url.includes('/search/repositories')) return response({ total_count: 2, items: [repository('valid-a'), repository('valid-b')] }, 200, true)
+      if (url.endsWith('/rate_limit')) return response({ resources: { core: { remaining: 8, reset: 1_786_665_600 } } })
+      if (url.includes('/commits/')) return response({ sha: url.includes('valid-b') ? 'valid-b-sha' : 'valid-a-sha' })
+      if (url.includes('/git/trees/')) return response({ truncated: false, tree: [{ path: 'package.json', type: 'blob', size: 150 }, { path: 'patch.yml', type: 'blob', size: 80 }] })
+      if (url.includes('/releases?')) return response([])
+      if (url.endsWith('/package.json')) {
+        const name = url.includes('valid-b') ? '@community/valid-b' : '@community/valid-a'
+        return response(JSON.stringify({ name, dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }))
+      }
+      if (url.endsWith('/patch.yml')) return response('- insert:\n    - id: valid\n      name: "@community/valid"\n')
+      return response({}, 404)
+    }
+
+    const service = new CatalogSyncService(store, undefined, fetcher)
+    const first = await terminalRun(store, service.create('admin').id)
+    expect(first).toMatchObject({ status: 'partially_failed', discovered: 2, verified: 1, deferred: 1, bundlesFound: 1, failed: 0, githubAuthenticated: false })
+    expect(first.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ repository: 'community/valid-b', status: 'deferred', reason: 'SYNC_BATCH_DEFERRED' }),
+    ]))
+    expect(store.retryableSyncRepositories(first.id)).toEqual(['community/valid-b'])
+
+    const retry = await terminalRun(store, service.create('admin', first.id).id)
+    expect(retry).toMatchObject({ status: 'completed', discovered: 1, verified: 1, deferred: 0, bundlesFound: 1, retryOf: first.id })
+    expect(retry.candidates).toHaveLength(1)
+    expect(retry.candidates[0]).toMatchObject({ repository: 'community/valid-b', status: 'verified' })
+    store.close()
+  })
 })

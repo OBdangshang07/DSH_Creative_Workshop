@@ -32,20 +32,28 @@ export class CatalogSyncService {
     this.running = true
     try {
       this.store.updateSyncRun(run.id, { status: 'discovering', startedAt: new Date().toISOString() })
+      const retryRepositories = run.retryOf === undefined ? undefined : this.store.retryableSyncRepositories(run.retryOf)
+      if (run.retryOf !== undefined && retryRepositories?.length === 0) throw new Error('SYNC_NOTHING_TO_RETRY')
       const result = await fetchGitHubTopicDetailed(this.githubToken, this.fetcher, progress => {
         this.store.updateSyncRun(run.id, {
           status: progress.phase,
           discovered: progress.discovered,
         })
+      }, {
+        ...(retryRepositories === undefined ? {} : { repositories: retryRepositories }),
+        maxRepositories: this.githubToken === undefined ? 15 : 60,
       })
       await this.store.ingestVerifiedPlugins(run.actorId, result.plugins)
       for (const candidate of result.candidates) this.store.recordSyncCandidate(run.id, candidate)
       this.store.updateSyncRun(run.id, {
-        status: result.failed > 0 ? 'partially_failed' : 'completed',
+        status: result.failed > 0 || result.deferred > 0 ? 'partially_failed' : 'completed',
         discovered: result.discovered,
         verified: result.verified,
         rejected: result.rejected,
         failed: result.failed,
+        deferred: result.deferred,
+        bundlesFound: result.bundlesFound,
+        githubAuthenticated: result.githubAuthenticated,
         ...(result.rateLimit.remaining === undefined ? {} : { githubRemaining: result.rateLimit.remaining }),
         ...(result.rateLimit.resetAt === undefined ? {} : { githubResetAt: result.rateLimit.resetAt }),
         finishedAt: new Date().toISOString(),

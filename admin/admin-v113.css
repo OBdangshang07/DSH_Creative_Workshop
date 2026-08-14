@@ -1,0 +1,27 @@
+.sync-progress {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+.sync-credential {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 12px;
+  padding: 6px 9px;
+  border: 1px solid var(--line2);
+  font: 10px ui-monospace, monospace;
+}
+.sync-credential.ok {
+  color: var(--green);
+  border-color: #526927;
+  background: #1b260f;
+}
+.sync-credential.warning {
+  color: var(--amber);
+  border-color: #66562d;
+  background: #241e0f;
+}
+@media (width <= 1100px) {
+  .sync-progress { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (width <= 760px) {
+  .sync-progress { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

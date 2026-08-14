@@ -4,7 +4,7 @@
 
 > 产品与工程基线见 `docs/01`–`10`。浏览器工坊、独立账号页与管理控制台已经部署；实现边界与运维说明见 [`docs/11-implementation.md`](docs/11-implementation.md)。
 
-当前正式版本：**v1.1.2**。该版本为插件与平台更新提供可追溯的更新日志和 Revision 历史，并开放账号名修改、通知偏好、讨论关注、保存搜索及对应管理能力；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前正式版本：**v1.1.3**。该版本修复 GitHub 匿名额度下的部分同步与重复抓取问题，新增额度预检、分批延后、失败续跑、双路候选发现和清晰的目录指标；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 当前结论
 
@@ -79,6 +79,7 @@ DSH 已经有强大的插件运行时，但还没有一个官方中心化市场�
 - 独立 `/admin/` 提供总览、在线峰值、插件 revision 审核、更新日志采集/编辑、异步 GitHub 同步、用户/Session/改名历史管理、社区治理和审计日志。
 - API 使用 SQLite WAL 持久化用户、Session、目录、审核、社区关系、同步任务和审计数据，并可从旧版 JSON 自动迁移。
 - GitHub `dsh-plugin` Topic 只作为候选发现源；目录固定 commit，检查 `package.json → dsh.bundle.patch → Cordis patch`，且新 revision 默认等待人工审核。
+- GitHub 同步会交叉发现最近更新与高 Star 候选；匿名模式按核心 API 余额安全分批，延后或失败的仓库可从原任务继续，不会重复覆盖公开目录。
 
 本轮没有把结构验证包装成 DeepSeek 官方认证或安全审计，也不会在服务器执行第三方 Bundle 代码。
 

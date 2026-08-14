@@ -1,0 +1,13 @@
+{
+  "version": "1.1.3",
+  "title": "目录同步稳定性修复",
+  "summary": "GitHub 目录同步现在会感知 API 额度、分批延后并从失败任务继续，同时拆分仓库、Bundle、待审核与公开指标。",
+  "publishedAt": "2026-08-14T15:30:00.000Z",
+  "changes": [
+    { "type": "fixed", "text": "修复匿名 GitHub API 额度耗尽导致一半候选仓库固定返回 403 的问题。" },
+    { "type": "fixed", "text": "同步续跑只处理失败或延后的候选，不再重复验证同一批已完成仓库。" },
+    { "type": "added", "text": "新增核心 API 额度预检、安全批次、延后队列和 Token 状态提示。" },
+    { "type": "changed", "text": "候选发现交叉覆盖最近更新与高 Star 仓库，并延迟无关仓库的 Release 请求。" },
+    { "type": "changed", "text": "管理端分别展示候选仓库、验证仓库、Bundle、待审核 Revision 与公开插件数量。" }
+  ]
+}
