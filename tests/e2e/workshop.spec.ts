@@ -1,5 +1,13 @@
 import { expect, test } from '@playwright/test'
 
+async function login(page: import('@playwright/test').Page, identity = 'browser-user', password = 'BrowserPassword123', returnTo = '/') {
+  await page.goto(`/login/?returnTo=${encodeURIComponent(returnTo)}`)
+  await page.locator('#identity').fill(identity)
+  await page.locator('#password').fill(password)
+  await page.locator('#authForm').getByRole('button', { name: '登录' }).click()
+  await expect(page).toHaveURL(new RegExp(returnTo === '/' ? '/$' : returnTo.replaceAll('/', '\\/')))
+}
+
 test('card opens an internal, reload-safe detail page with an explicit GitHub handoff', async ({ page }) => {
   await page.goto('/')
   const card = page.locator('.dsh-card').first()
@@ -63,5 +71,56 @@ test('catalog and detail remain usable on a narrow mobile viewport', async ({ pa
   await expect(page.locator('.dsh-card').first()).toBeVisible()
   await page.locator('.dsh-card').first().click()
   await expect(page.getByRole('link', { name: /前往 GitHub/ })).toBeVisible()
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
+})
+
+test('homepage shows live presence and a signed-in user can publish discussions', async ({ page }) => {
+  await page.goto('/')
+  await expect(page.locator('#dshPresenceBadge')).toHaveText(/当前在线 \d+/)
+
+  await login(page)
+  await page.goto('/?view=discussions')
+  await page.locator('#discussionForm input[name="title"]').fill('浏览器端社区讨论验证')
+  await page.locator('#discussionForm textarea[name="body"]').fill('这是一条通过真实浏览器流程创建并可在刷新后读取的讨论内容。')
+  await page.locator('#discussionForm').getByRole('button', { name: '发布主题' }).click()
+  await expect(page).toHaveURL(/\/discussion\/\?id=/)
+  await expect(page.locator('.dsh-thread-detail h1')).toHaveText('浏览器端社区讨论验证')
+  await page.locator('#replyForm textarea[name="body"]').fill('浏览器端回复也已接入真实后端。')
+  await page.locator('#replyForm').getByRole('button', { name: '发布回复' }).click()
+  await expect(page.locator('.dsh-review-list')).toContainText('浏览器端回复也已接入真实后端')
+  await page.reload()
+  await expect(page.locator('.dsh-thread-detail h1')).toHaveText('浏览器端社区讨论验证')
+})
+
+test('a user can publish a collection, discover it in the square and clone it', async ({ page }) => {
+  await login(page)
+  await page.locator('#dshAccountButton').click()
+  await page.getByRole('button', { name: '合集', exact: true }).click()
+  await page.locator('#createCollectionForm input[name="name"]').fill('浏览器公开合集')
+  await page.locator('#createCollectionForm input[name="description"]').fill('用于验证合集广场、详情和复制流程。')
+  await page.locator('#createCollectionForm select[name="visibility"]').selectOption('public')
+  await page.locator('#createCollectionForm').getByRole('button', { name: '创建空合集' }).click()
+  await expect(page.locator('[data-collection-name][value="浏览器公开合集"]')).toBeVisible()
+  await page.goto('/collections/')
+  const collection = page.locator('[data-public-collection]').filter({ hasText: '浏览器公开合集' }).first()
+  await expect(collection).toBeVisible()
+  await collection.click()
+  await expect(page.locator('.dsh-collection-hero h1')).toHaveText('浏览器公开合集')
+  await page.getByRole('button', { name: '复制到我的合集' }).click()
+  await expect(page.locator('.dsh-toast')).toContainText('已复制为你的私有合集')
+})
+
+test('administrator overview and community governance are available on desktop and mobile', async ({ page }) => {
+  await login(page, 'browser-admin', 'BrowserAdminPassword123', '/admin/')
+  await expect(page.getByRole('heading', { name: '运行总览' })).toBeVisible()
+  await expect(page.locator('.presence-stat')).toContainText('当前在线')
+  await page.locator('[data-view="community"]').click()
+  await expect(page.getByRole('heading', { name: '社区治理' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '内容治理' })).toBeVisible()
+  await expect(page.locator('.community-panel').first()).toContainText('浏览器端社区讨论验证')
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.reload()
+  await expect(page.getByRole('heading', { name: '社区治理' })).toBeVisible()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true)
 })

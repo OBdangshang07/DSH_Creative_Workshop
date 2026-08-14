@@ -20,7 +20,7 @@ function proxy(request, response) {
 async function staticFile(request, response) {
   const url = new URL(request.url, `http://${request.headers.host || '127.0.0.1'}`)
   let relative = decodeURIComponent(url.pathname).replace(/^\/+/, '')
-  if (relative === '' || relative === 'plugin' || relative === 'plugin/') relative = 'index.html'
+  if (relative === '' || /^(?:plugin|discussion|collection|collections)\/?$/.test(relative)) relative = 'index.html'
   else if (relative.endsWith('/')) relative += 'index.html'
   let target = resolve(root, relative)
   if (target !== root && !target.startsWith(`${root}${sep}`)) { response.writeHead(403); response.end('Forbidden'); return }

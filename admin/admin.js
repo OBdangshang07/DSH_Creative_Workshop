@@ -1,8 +1,14 @@
 import { api, escapeHtml, formatTime } from '/js/account-api.js';
 
 const main = document.getElementById('mainContent');
-const titles = { overview: '运行总览', plugins: '插件审核', sync: '目录同步', users: '用户管理', audit: '审计日志' };
-const state = { view: 'overview', overview: null, plugins: { page: 1, q: '', status: '', kind: '' }, users: { page: 1, q: '', role: '', status: '' }, audit: { page: 1, q: '', action: '' }, syncTimer: null };
+const titles = { overview: '运行总览', plugins: '插件审核', sync: '目录同步', users: '用户管理', community: '社区治理', audit: '审计日志' };
+const state = {
+  view: 'overview', overview: null,
+  plugins: { page: 1, q: '', status: '', kind: '' },
+  users: { page: 1, q: '', role: '', status: '' },
+  community: { page: 1, q: '', type: '', status: '', reportsPage: 1, reportStatus: 'pending' },
+  audit: { page: 1, q: '', action: '' }, syncTimer: null,
+};
 
 function toast(text, type = '') {
   const node = document.createElement('div');
@@ -12,9 +18,9 @@ function toast(text, type = '') {
   setTimeout(() => node.remove(), 4200);
 }
 
-function badge(status) {
-  const labels = { approved: '已公开', pending: '待审核', hidden: '已隐藏', rejected: '已拒绝', active: '启用', disabled: '停用', completed: '已完成', partially_failed: '部分失败', failed: '失败', queued: '排队中', discovering: '发现候选', verifying: '结构验证', verified: '已验证' };
-  return `<span class="badge ${escapeHtml(status)}">${labels[status] || escapeHtml(status)}</span>`;
+function badge(status, text) {
+  const labels = { approved: '已公开', pending: '待审核', hidden: '已隐藏', rejected: '已拒绝', active: '启用', disabled: '停用', completed: '已完成', partially_failed: '部分失败', failed: '失败', queued: '排队中', discovering: '发现候选', verifying: '结构验证', verified: '已验证', open: '开放', locked: '已锁定', visible: '可见', resolved: '已处理', dismissed: '已驳回', thread: '讨论', reply: '回复', collection: '合集', review: '评价' };
+  return `<span class="badge ${escapeHtml(status)}">${escapeHtml(text || labels[status] || status)}</span>`;
 }
 
 function pagination(result, view) {
@@ -53,12 +59,15 @@ async function renderOverview() {
   const latest = overview.latestSync;
   main.innerHTML = `
     <div class="stats">
+      <article class="stat presence-stat"><p><i></i>当前在线</p><strong class="green">${overview.presence.online}</strong><small>${overview.presence.windowSeconds} 秒活跃窗口</small></article>
+      <article class="stat"><p>24h 在线峰值</p><strong class="blue">${overview.presence.peak24h}</strong></article>
       <article class="stat"><p>注册用户</p><strong>${overview.users}</strong></article>
-      <article class="stat"><p>有效会话</p><strong>${overview.sessions}</strong></article>
       <article class="stat"><p>目录 Bundle</p><strong class="blue">${overview.plugins}</strong></article>
       <article class="stat"><p>公开展示</p><strong class="green">${overview.approvedPlugins}</strong></article>
       <article class="stat"><p>等待审核</p><strong class="amber">${overview.pendingPlugins}</strong></article>
-      <article class="stat"><p>拒绝 / 隐藏</p><strong>${overview.rejectedPlugins}</strong></article>
+      <article class="stat"><p>公开讨论</p><strong>${overview.discussions}</strong></article>
+      <article class="stat"><p>公开合集</p><strong>${overview.publicCollections}</strong></article>
+      <article class="stat"><p>待处理举报</p><strong class="${overview.pendingReports ? 'amber' : 'green'}">${overview.pendingReports}</strong></article>
     </div>
     <div class="grid-2">
       <section class="panel"><div class="panel-head"><div><h2>目录治理状态</h2><p>仅发布通过结构验证并经人工批准的 revision</p></div><button class="button" data-jump="plugins">进入审核</button></div><div class="panel-body status-list">
@@ -71,6 +80,9 @@ async function renderOverview() {
         ${latest ? `<p>${badge(latest.status)}</p><div class="sync-progress"><div><strong>${latest.discovered}</strong>候选</div><div><strong>${latest.verified}</strong>仓库通过</div><div><strong>${latest.rejected}</strong>拒绝</div><div><strong>${latest.failed}</strong>失败</div></div>` : '<div class="empty">尚未创建同步任务</div>'}
       </div></section>
     </div>
+    <section class="panel" style="margin-top:16px"><div class="panel-head"><div><h2>社区运行状态</h2><p>讨论、公开合集与用户举报均由真实后端存储和治理</p></div><button class="button ${overview.pendingReports ? 'primary' : ''}" data-jump="community">进入社区治理</button></div><div class="panel-body community-summary">
+      <div><span>讨论主题</span><strong>${overview.discussions}</strong></div><div><span>公开合集</span><strong>${overview.publicCollections}</strong></div><div><span>待处理举报</span><strong>${overview.pendingReports}</strong></div><div><span>有效会话</span><strong>${overview.sessions}</strong></div>
+    </div></section>
     <section class="panel" style="margin-top:16px"><div class="panel-head"><div><h2>最近管理操作</h2><p>账号变更、插件审核与同步任务都会留下审计记录</p></div><button class="button" data-jump="audit">查看全部</button></div><div class="panel-body event-list">
       ${overview.audit.length ? overview.audit.slice(0, 8).map(item => `<div class="event"><time>${formatTime(item.at)}</time><strong>${escapeHtml(item.action)}</strong><code>${escapeHtml(item.target)}</code></div>`).join('') : '<div class="empty">暂无审计记录</div>'}
     </div></section>`;
@@ -123,13 +135,54 @@ async function renderUsers() {
   main.querySelectorAll('[data-user-sessions]').forEach(button => button.addEventListener('click', async () => { const userId = button.dataset.userSessions; const row = document.getElementById(`sessions-${userId}`); row.hidden = !row.hidden; if (row.hidden) return; try { const result = await api(`/admin/users/${encodeURIComponent(userId)}/sessions`); row.querySelector('.sync-detail').innerHTML = result.items.length ? result.items.map(session => `<div class="session-card"><div><strong>${escapeHtml(session.userAgent || '未知客户端')} ${session.current ? '<span class="current-mark">当前</span>' : ''}</strong><small>${escapeHtml(session.ip || '未知 IP')} · 最近 ${formatTime(session.lastSeenAt)} · 到期 ${formatTime(session.expiresAt)}</small></div><button class="button danger" data-revoke-session="${session.id}">撤销</button></div>`).join('') : '<div class="empty">该用户没有有效会话</div>'; row.querySelectorAll('[data-revoke-session]').forEach(revoke => revoke.addEventListener('click', async () => { try { await api(`/admin/users/${encodeURIComponent(userId)}/sessions/${encodeURIComponent(revoke.dataset.revokeSession)}`, { method: 'DELETE' }); toast('会话已撤销'); button.click(); button.click(); } catch (error) { toast(error.message, 'error'); } })); } catch (error) { row.querySelector('.sync-detail').textContent = error.message; } })); bindCommon();
 }
 
+function communityActions(item) {
+  if (item.type === 'thread') return `<button data-community-action="${item.status === 'locked' ? 'open' : 'locked'}" data-community-type="thread" data-community-id="${escapeHtml(item.id)}">${item.status === 'locked' ? '解除锁定' : '锁定'}</button><button class="danger" data-community-action="${item.status === 'hidden' ? 'open' : 'hidden'}" data-community-type="thread" data-community-id="${escapeHtml(item.id)}">${item.status === 'hidden' ? '恢复显示' : '隐藏'}</button>`;
+  if (item.type === 'reply') return `<button class="${item.status === 'hidden' ? '' : 'danger'}" data-community-action="${item.status === 'hidden' ? 'visible' : 'hidden'}" data-community-type="reply" data-community-id="${escapeHtml(item.id)}">${item.status === 'hidden' ? '恢复显示' : '隐藏'}</button>`;
+  return `<button class="${item.status === 'hidden' ? '' : 'danger'}" data-community-action="${item.status === 'hidden' ? 'visible' : 'hidden'}" data-community-type="collection" data-community-id="${escapeHtml(item.id)}">${item.status === 'hidden' ? '恢复公开' : '隐藏'}</button>`;
+}
+
+async function renderCommunity() {
+  const contentQuery = new URLSearchParams({ page: state.community.page, pageSize: 25 });
+  ['q', 'type', 'status'].forEach(key => { if (state.community[key]) contentQuery.set(key, state.community[key]); });
+  const reportQuery = new URLSearchParams({ page: state.community.reportsPage, pageSize: 15 });
+  if (state.community.reportStatus) reportQuery.set('status', state.community.reportStatus);
+  const [content, reports] = await Promise.all([api(`/admin/community?${contentQuery}`), api(`/admin/reports?${reportQuery}`)]);
+  const reportPages = Math.max(1, Math.ceil(reports.total / reports.pageSize));
+  main.innerHTML = `
+    <div class="section-note">社区内容默认保持可见。锁定讨论会禁止继续回复；隐藏内容和处理举报都要求填写原因，并写入审计日志。</div>
+    <section class="panel community-panel"><div class="panel-head"><div><h2>内容治理</h2><p>讨论主题、回复与公开合集</p></div></div><div class="panel-body">
+      <form class="toolbar" id="communityFilters"><input name="q" value="${escapeHtml(state.community.q)}" placeholder="搜索标题、正文或作者"><select name="type"><option value="">全部类型</option>${['thread','reply','collection'].map(value => `<option value="${value}" ${state.community.type === value ? 'selected' : ''}>${{thread:'讨论',reply:'回复',collection:'合集'}[value]}</option>`).join('')}</select><select name="status"><option value="">全部状态</option>${['open','locked','visible','hidden'].map(value => `<option value="${value}" ${state.community.status === value ? 'selected' : ''}>${{open:'开放',locked:'锁定',visible:'可见',hidden:'隐藏'}[value]}</option>`).join('')}</select><button class="button primary">筛选</button></form>
+      <div class="table-wrap"><table><thead><tr><th>类型 / 内容</th><th>作者</th><th>状态</th><th>举报</th><th>操作</th></tr></thead><tbody>${content.items.map(item => `<tr><td>${badge(item.type)} <strong class="row-title">${escapeHtml(item.title)}</strong><small class="content-preview">${escapeHtml(item.body)}</small></td><td><small>${escapeHtml(item.authorName)}<br>${formatTime(item.updatedAt)}</small></td><td>${badge(item.status)}</td><td><strong class="${item.reportCount ? 'amber-text' : ''}">${item.reportCount}</strong></td><td><div class="actions">${communityActions(item)}</div></td></tr>`).join('') || '<tr><td colspan="5" class="empty">没有符合条件的社区内容</td></tr>'}</tbody></table></div>${pagination(content, 'community')}
+    </div></section>
+    <section class="panel community-panel"><div class="panel-head"><div><h2>用户举报</h2><p>先核验目标内容，再决定处理或驳回</p></div><select id="reportStatus"><option value="pending" ${state.community.reportStatus === 'pending' ? 'selected' : ''}>待处理</option><option value="resolved" ${state.community.reportStatus === 'resolved' ? 'selected' : ''}>已处理</option><option value="dismissed" ${state.community.reportStatus === 'dismissed' ? 'selected' : ''}>已驳回</option><option value="" ${state.community.reportStatus === '' ? 'selected' : ''}>全部</option></select></div><div class="panel-body">
+      <div class="report-grid">${reports.items.map(report => `<article class="report-card"><div class="report-card-head">${badge(report.targetType)} ${badge(report.status, report.status === 'pending' ? '待处理' : undefined)}<time>${formatTime(report.createdAt)}</time></div><h3>${escapeHtml(report.target?.title || '目标内容已不存在')}</h3><p>${escapeHtml(report.target?.body || '无法读取目标正文')}</p><dl><div><dt>举报人</dt><dd>${escapeHtml(report.reporterName)}</dd></div><div><dt>原因</dt><dd>${escapeHtml(report.reason)}</dd></div>${report.resolution ? `<div><dt>处理说明</dt><dd>${escapeHtml(report.resolution)}</dd></div>` : ''}</dl>${report.status === 'pending' ? `<div class="actions"><button data-report-id="${escapeHtml(report.id)}" data-report-status="resolved">标记已处理</button><button data-report-id="${escapeHtml(report.id)}" data-report-status="dismissed">驳回举报</button></div>` : ''}</article>`).join('') || '<div class="empty">当前筛选下没有举报</div>'}</div>
+      <div class="pagination"><span>第 ${reports.page} / ${reportPages} 页 · 共 ${reports.total} 项</span><button data-report-page="${reports.page - 1}" ${reports.page <= 1 ? 'disabled' : ''}>‹</button><button data-report-page="${reports.page + 1}" ${reports.page >= reportPages ? 'disabled' : ''}>›</button></div>
+    </div></section>`;
+  document.getElementById('communityFilters').addEventListener('submit', event => { event.preventDefault(); const values = new FormData(event.currentTarget); state.community = { ...state.community, page: 1, q: String(values.get('q') || '').trim(), type: String(values.get('type') || ''), status: String(values.get('status') || '') }; renderCommunity().catch(showFailure); });
+  document.getElementById('reportStatus').addEventListener('change', event => { state.community.reportStatus = event.currentTarget.value; state.community.reportsPage = 1; renderCommunity().catch(showFailure); });
+  main.querySelectorAll('[data-community-action]').forEach(button => button.addEventListener('click', async () => {
+    const label = button.textContent.trim();
+    const reason = await confirmAction({ title: `${label}该内容？`, body: '此操作会立即影响社区公开展示，并写入审计日志。', confirmText: label, reason: true });
+    if (reason === null) return;
+    const path = button.dataset.communityType === 'collection' ? `/admin/collections/${encodeURIComponent(button.dataset.communityId)}` : `/admin/discussions/${encodeURIComponent(button.dataset.communityType)}/${encodeURIComponent(button.dataset.communityId)}`;
+    try { await api(path, { method: 'PATCH', body: JSON.stringify({ status: button.dataset.communityAction, reason }) }); toast('社区内容状态已更新'); await renderCommunity(); } catch (error) { toast(error.message, 'error'); }
+  }));
+  main.querySelectorAll('[data-report-id]').forEach(button => button.addEventListener('click', async () => {
+    const resolution = await confirmAction({ title: button.dataset.reportStatus === 'resolved' ? '确认完成此举报处理？' : '确认驳回此举报？', body: '请填写可追溯的处理说明。此操作不会自动隐藏目标内容。', confirmText: '确认提交', reason: true });
+    if (resolution === null) return;
+    try { await api(`/admin/reports/${encodeURIComponent(button.dataset.reportId)}`, { method: 'PATCH', body: JSON.stringify({ status: button.dataset.reportStatus, resolution }) }); toast('举报状态已更新'); await renderCommunity(); } catch (error) { toast(error.message, 'error'); }
+  }));
+  main.querySelectorAll('[data-report-page]').forEach(button => button.addEventListener('click', () => { state.community.reportsPage = Number(button.dataset.reportPage); renderCommunity().catch(showFailure); }));
+  bindCommon();
+}
+
 async function renderAudit() {
   const query = new URLSearchParams({ page: state.audit.page, pageSize: 25 }); ['q','action'].forEach(key => { if (state.audit[key]) query.set(key, state.audit[key]); }); const result = await api(`/admin/audit?${query}`);
   main.innerHTML = `<div class="section-note">审计详情包含请求 ID 与来源 IP，用于定位管理操作。密码、Session Token 与 Cookie 不会写入日志或通过此接口返回。</div><form class="toolbar" id="auditFilters"><input name="q" value="${escapeHtml(state.audit.q)}" placeholder="搜索操作者 ID 或目标"><select name="action"><option value="">全部操作</option>${['user.update','plugin.moderate','sync.create'].map(value => `<option value="${value}" ${state.audit.action === value ? 'selected' : ''}>${value}</option>`).join('')}</select><button class="button primary">筛选</button></form><div class="table-wrap"><table><thead><tr><th>时间</th><th>操作</th><th>操作者 / 目标</th><th>请求上下文</th><th>详情</th></tr></thead><tbody>${result.items.map(item => `<tr><td><small>${formatTime(item.at)}</small></td><td><code>${escapeHtml(item.action)}</code></td><td><small>${escapeHtml(item.actorId)}<br><code>${escapeHtml(item.target)}</code></small></td><td><small>IP ${escapeHtml(item.ip || '—')}<br>Request ${escapeHtml(item.requestId || '—')}</small></td><td><code>${escapeHtml(JSON.stringify(item.details))}</code></td></tr>`).join('') || '<tr><td colspan="5" class="empty">暂无审计记录</td></tr>'}</tbody></table></div>${pagination(result, 'audit')}`;
   document.getElementById('auditFilters').addEventListener('submit', event => { event.preventDefault(); const values = new FormData(event.currentTarget); state.audit = { ...state.audit, page: 1, q: String(values.get('q') || '').trim(), action: String(values.get('action') || '') }; renderAudit().catch(showFailure); }); bindCommon();
 }
 
-const renderers = { overview: renderOverview, plugins: renderPlugins, sync: renderSync, users: renderUsers, audit: renderAudit };
+const renderers = { overview: renderOverview, plugins: renderPlugins, sync: renderSync, users: renderUsers, community: renderCommunity, audit: renderAudit };
 async function renderCurrent() { clearTimeout(state.syncTimer); main.setAttribute('aria-busy', 'true'); try { await renderers[state.view](); main.focus({ preventScroll: true }); } catch (error) { showFailure(error); } finally { main.removeAttribute('aria-busy'); } }
 function switchView(view) { state.view = view; document.getElementById('viewTitle').textContent = titles[view]; document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view)); history.replaceState(null, '', `#${view}`); renderCurrent(); }
 function showFailure(error) { if ([401,403].includes(error.status)) { location.replace(`/login/?returnTo=${encodeURIComponent('/admin/')}`); return; } main.innerHTML = `<section class="panel"><div class="panel-body empty">加载失败：${escapeHtml(error.message)}<br><br><button class="button" id="retryButton">重试</button></div></section>`; document.getElementById('retryButton').addEventListener('click', renderCurrent); }

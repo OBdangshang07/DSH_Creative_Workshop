@@ -11,6 +11,11 @@ export type UserStatus = 'active' | 'disabled'
 export type ModerationStatus = 'approved' | 'pending' | 'hidden' | 'rejected'
 export type PluginVerificationStatus = 'verified_bundle'
 export type SyncRunStatus = 'queued' | 'discovering' | 'verifying' | 'completed' | 'partially_failed' | 'failed'
+export type CollectionVisibility = 'private' | 'public'
+export type CollectionModerationStatus = 'visible' | 'hidden'
+export type DiscussionStatus = 'open' | 'locked' | 'hidden' | 'deleted'
+export type ReplyStatus = 'visible' | 'hidden' | 'deleted'
+export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
 
 export interface StoredUser {
   id: string
@@ -31,8 +36,57 @@ export interface UserCollection {
   name: string
   description: string
   pluginIds: string[]
+  visibility: CollectionVisibility
+  moderationStatus: CollectionModerationStatus
+  ownerName?: string
+  publishedAt?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface DiscussionThread {
+  id: string
+  pluginId?: string
+  pluginName?: string
+  authorId: string
+  authorName: string
+  title: string
+  body: string
+  status: DiscussionStatus
+  replyCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface DiscussionReply {
+  id: string
+  threadId: string
+  authorId: string
+  authorName: string
+  body: string
+  status: ReplyStatus
+  createdAt: string
+  updatedAt: string
+}
+
+export interface NotificationView {
+  id: string
+  type: string
+  pluginId?: string
+  threadId?: string
+  payload: Record<string, unknown>
+  readAt?: string
+  createdAt: string
+}
+
+export interface ActivityEvent {
+  id: string
+  type: string
+  pluginId?: string
+  collectionId?: string
+  threadId?: string
+  payload: Record<string, unknown>
+  createdAt: string
 }
 
 export interface GitHubReview {
@@ -163,6 +217,7 @@ export interface PluginCommunity {
   subscriptionCount: number
   reviewCount: number
   reviewScore: number
+  discussionCount: number
 }
 
 export interface PluginDependencyView {
@@ -310,7 +365,10 @@ export class AccountStore {
       );
       CREATE TABLE IF NOT EXISTS collections(
         id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        name TEXT NOT NULL, description TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        name TEXT NOT NULL, description TEXT NOT NULL,
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private','public')),
+        moderation_status TEXT NOT NULL DEFAULT 'visible' CHECK(moderation_status IN ('visible','hidden')),
+        published_at TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS collection_items(
         collection_id TEXT NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
@@ -369,6 +427,64 @@ export class AccountStore {
       CREATE INDEX IF NOT EXISTS reviews_plugin_revision_idx ON reviews(plugin_id, revision_id, updated_at DESC);
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(2, datetime('now'));
     `)
+    const collectionColumns = (this.database.prepare('PRAGMA table_info(collections)').all() as SqlRow[]).map(row => String(row.name))
+    if (!collectionColumns.includes('visibility')) this.database.exec("ALTER TABLE collections ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private' CHECK(visibility IN ('private','public'))")
+    if (!collectionColumns.includes('moderation_status')) this.database.exec("ALTER TABLE collections ADD COLUMN moderation_status TEXT NOT NULL DEFAULT 'visible' CHECK(moderation_status IN ('visible','hidden'))")
+    if (!collectionColumns.includes('published_at')) this.database.exec('ALTER TABLE collections ADD COLUMN published_at TEXT')
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS discussion_threads(
+        id TEXT PRIMARY KEY, plugin_id TEXT REFERENCES plugins(id) ON DELETE SET NULL,
+        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, author_name TEXT NOT NULL,
+        title TEXT NOT NULL, body TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('open','locked','hidden','deleted')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS discussion_threads_updated_idx ON discussion_threads(status,updated_at DESC);
+      CREATE INDEX IF NOT EXISTS discussion_threads_plugin_idx ON discussion_threads(plugin_id,updated_at DESC);
+      CREATE TABLE IF NOT EXISTS discussion_replies(
+        id TEXT PRIMARY KEY, thread_id TEXT NOT NULL REFERENCES discussion_threads(id) ON DELETE CASCADE,
+        author_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, author_name TEXT NOT NULL,
+        body TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('visible','hidden','deleted')),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS discussion_replies_thread_idx ON discussion_replies(thread_id,created_at);
+      CREATE TABLE IF NOT EXISTS content_reports(
+        id TEXT PRIMARY KEY, reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        target_type TEXT NOT NULL CHECK(target_type IN ('thread','reply','review','collection')),
+        target_id TEXT NOT NULL, reason TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('pending','resolved','dismissed')),
+        created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT, resolution TEXT,
+        UNIQUE(reporter_id,target_type,target_id)
+      );
+      CREATE INDEX IF NOT EXISTS content_reports_status_idx ON content_reports(status,created_at DESC);
+      CREATE TABLE IF NOT EXISTS notifications(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type TEXT NOT NULL, actor_id TEXT, plugin_id TEXT REFERENCES plugins(id) ON DELETE SET NULL,
+        thread_id TEXT REFERENCES discussion_threads(id) ON DELETE SET NULL,
+        payload_json TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE,
+        read_at TEXT, created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id,read_at,created_at DESC);
+      CREATE TABLE IF NOT EXISTS activity_events(
+        id TEXT PRIMARY KEY, type TEXT NOT NULL, actor_id TEXT,
+        plugin_id TEXT REFERENCES plugins(id) ON DELETE SET NULL,
+        collection_id TEXT REFERENCES collections(id) ON DELETE SET NULL,
+        thread_id TEXT REFERENCES discussion_threads(id) ON DELETE SET NULL,
+        payload_json TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS activity_events_created_idx ON activity_events(created_at DESC);
+      CREATE TABLE IF NOT EXISTS presence_snapshots(
+        bucket_at TEXT PRIMARY KEY, peak INTEGER NOT NULL, samples INTEGER NOT NULL, total INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO activity_events(id,type,plugin_id,payload_json,dedupe_key,created_at)
+        SELECT 'event_backfill_' || replace(r.id,':','_'),'plugin.published',p.id,
+               json_object('name',json_extract(r.record_json,'$.name'),'revisionId',r.id),
+               'plugin.published:' || r.id,COALESCE(m.updated_at,p.updated_at)
+        FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
+        JOIN moderation_decisions m ON m.revision_id=r.id WHERE m.status='approved';
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(3, datetime('now'));
+    `)
   }
 
   private async importLegacyIfNeeded(): Promise<void> {
@@ -402,8 +518,12 @@ export class AccountStore {
         for (const pluginId of user.subscriptions ?? []) this.insertRelation('subscriptions', user.id, pluginId)
       }
       for (const collection of legacy.collections ?? []) {
-        this.database.prepare('INSERT OR IGNORE INTO collections VALUES(?,?,?,?,?,?)').run(
-          collection.id, collection.ownerId, collection.name, collection.description, collection.createdAt, collection.updatedAt,
+        this.database.prepare(`INSERT OR IGNORE INTO collections(
+          id,owner_id,name,description,visibility,moderation_status,published_at,created_at,updated_at
+        ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+          collection.id, collection.ownerId, collection.name, collection.description,
+          collection.visibility ?? 'private', collection.moderationStatus ?? 'visible', collection.publishedAt ?? null,
+          collection.createdAt, collection.updatedAt,
         )
         collection.pluginIds.filter(pluginId => this.pluginExists(pluginId)).forEach((pluginId, index) => this.database.prepare(
           'INSERT OR IGNORE INTO collection_items VALUES(?,?,?)',
@@ -645,40 +765,103 @@ export class AccountStore {
   }
 
   userCollections(userId: string): UserCollection[] {
-    return (this.database.prepare('SELECT * FROM collections WHERE owner_id=? ORDER BY updated_at DESC').all(userId) as SqlRow[]).map(row => ({
-      id: String(row.id), ownerId: String(row.owner_id), name: String(row.name), description: String(row.description),
-      pluginIds: (this.database.prepare('SELECT plugin_id FROM collection_items WHERE collection_id=? ORDER BY position').all(String(row.id)) as SqlRow[]).map(item => String(item.plugin_id)),
-      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
-    }))
+    return (this.database.prepare(`SELECT c.*,u.username AS owner_name FROM collections c JOIN users u ON u.id=c.owner_id
+      WHERE c.owner_id=? ORDER BY c.updated_at DESC`).all(userId) as SqlRow[]).map(row => this.collectionFromRow(row))
   }
 
-  async createCollection(userId: string, name: string, description: string, pluginIds: string[]): Promise<UserCollection> {
+  publicCollections(query: { q?: string; page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(50, Math.max(1, query.pageSize ?? 20))
+    const search = query.q?.trim()
+    const where = search ? "AND (c.name LIKE ? OR c.description LIKE ? OR u.username LIKE ?)" : ''
+    const params = search ? [`%${search}%`, `%${search}%`, `%${search}%`] : []
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM collections c JOIN users u ON u.id=c.owner_id
+      WHERE c.visibility='public' AND c.moderation_status='visible' ${where}`, ...params)
+    const rows = this.database.prepare(`SELECT c.*,u.username AS owner_name FROM collections c JOIN users u ON u.id=c.owner_id
+      WHERE c.visibility='public' AND c.moderation_status='visible' ${where}
+      ORDER BY c.published_at DESC,c.updated_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => this.collectionWithPlugins(row)), page, pageSize, total }
+  }
+
+  publicCollection(collectionId: string) {
+    const row = this.database.prepare(`SELECT c.*,u.username AS owner_name FROM collections c JOIN users u ON u.id=c.owner_id
+      WHERE c.id=? AND c.visibility='public' AND c.moderation_status='visible'`).get(collectionId) as SqlRow | undefined
+    return row === undefined ? undefined : this.collectionWithPlugins(row)
+  }
+
+  async createCollection(userId: string, name: string, description: string, pluginIds: string[], visibility: CollectionVisibility = 'private'): Promise<UserCollection> {
     const at = nowIso()
-    const collection: UserCollection = { id: `col_${randomUUID()}`, ownerId: userId, name, description, pluginIds: [...new Set(pluginIds)].filter(id => this.isPublicPlugin(id)).slice(0, 100), createdAt: at, updatedAt: at }
+    const collection: UserCollection = {
+      id: `col_${randomUUID()}`, ownerId: userId, name, description,
+      pluginIds: [...new Set(pluginIds)].filter(id => this.isPublicPlugin(id)).slice(0, 100),
+      visibility, moderationStatus: 'visible', ...(visibility === 'public' ? { publishedAt: at } : {}), createdAt: at, updatedAt: at,
+    }
     this.transaction(() => {
-      this.database.prepare('INSERT INTO collections VALUES(?,?,?,?,?,?)').run(collection.id, userId, name, description, at, at)
+      this.database.prepare(`INSERT INTO collections(
+        id,owner_id,name,description,visibility,moderation_status,published_at,created_at,updated_at
+      ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+        collection.id, userId, name, description, visibility, 'visible', collection.publishedAt ?? null, at, at,
+      )
       collection.pluginIds.forEach((pluginId, position) => this.database.prepare('INSERT INTO collection_items VALUES(?,?,?)').run(collection.id, pluginId, position))
+      if (visibility === 'public') this.activity('collection.published', `collection.published:${collection.id}:${at}`, { name }, { actorId: userId, collectionId: collection.id }, at)
     })
-    return collection
+    return this.userCollections(userId).find(item => item.id === collection.id)!
   }
 
-  async updateCollection(userId: string, collectionId: string, update: { name: string; description: string; pluginIds: string[] }): Promise<UserCollection | undefined> {
-    const existing = this.database.prepare('SELECT id FROM collections WHERE id=? AND owner_id=?').get(collectionId, userId) as SqlRow | undefined
+  async updateCollection(userId: string, collectionId: string, update: { name: string; description: string; pluginIds: string[]; visibility: CollectionVisibility }): Promise<UserCollection | undefined> {
+    const existing = this.database.prepare('SELECT * FROM collections WHERE id=? AND owner_id=?').get(collectionId, userId) as SqlRow | undefined
     if (existing === undefined) return undefined
     const pluginIds = [...new Set(update.pluginIds)].filter(id => this.isPublicPlugin(id)).slice(0, 100)
     const updatedAt = nowIso()
+    const publishedAt = update.visibility === 'public' ? String(existing.published_at ?? updatedAt) : null
     this.transaction(() => {
-      this.database.prepare('UPDATE collections SET name=?,description=?,updated_at=? WHERE id=? AND owner_id=?').run(
-        update.name, update.description, updatedAt, collectionId, userId,
+      this.database.prepare('UPDATE collections SET name=?,description=?,visibility=?,published_at=?,updated_at=? WHERE id=? AND owner_id=?').run(
+        update.name, update.description, update.visibility, publishedAt, updatedAt, collectionId, userId,
       )
       this.database.prepare('DELETE FROM collection_items WHERE collection_id=?').run(collectionId)
       pluginIds.forEach((pluginId, position) => this.database.prepare('INSERT INTO collection_items VALUES(?,?,?)').run(collectionId, pluginId, position))
+      if (String(existing.visibility) !== 'public' && update.visibility === 'public') {
+        this.activity('collection.published', `collection.published:${collectionId}:${publishedAt}`, { name: update.name }, { actorId: userId, collectionId }, updatedAt)
+      }
     })
     return this.userCollections(userId).find(collection => collection.id === collectionId)
   }
 
+  async cloneCollection(userId: string, collectionId: string): Promise<UserCollection | undefined> {
+    const source = this.publicCollection(collectionId)
+    if (source === undefined) return undefined
+    return this.createCollection(userId, `${source.name}（副本）`.slice(0, 80), source.description, source.pluginIds, 'private')
+  }
+
+  async moderateCollection(actorId: string, collectionId: string, status: CollectionModerationStatus, reason: string, context: { ip?: string; requestId?: string } = {}): Promise<boolean> {
+    const row = this.database.prepare('SELECT moderation_status FROM collections WHERE id=?').get(collectionId) as SqlRow | undefined
+    if (row === undefined) return false
+    this.transaction(() => {
+      this.database.prepare('UPDATE collections SET moderation_status=?,updated_at=? WHERE id=?').run(status, nowIso(), collectionId)
+      this.audit(actorId, 'collection.moderate', collectionId, { before: row.moderation_status, after: status, reason }, context)
+    })
+    return true
+  }
+
   async deleteCollection(userId: string, collectionId: string): Promise<boolean> {
     return Number(this.database.prepare('DELETE FROM collections WHERE id=? AND owner_id=?').run(collectionId, userId).changes) > 0
+  }
+
+  private collectionFromRow(row: SqlRow): UserCollection {
+    return {
+      id: String(row.id), ownerId: String(row.owner_id), name: String(row.name), description: String(row.description),
+      pluginIds: (this.database.prepare('SELECT plugin_id FROM collection_items WHERE collection_id=? ORDER BY position').all(String(row.id)) as SqlRow[]).map(item => String(item.plugin_id)),
+      visibility: String(row.visibility) as CollectionVisibility,
+      moderationStatus: String(row.moderation_status) as CollectionModerationStatus,
+      ...(row.owner_name === null || row.owner_name === undefined ? {} : { ownerName: String(row.owner_name) }),
+      ...(row.published_at === null || row.published_at === undefined ? {} : { publishedAt: String(row.published_at) }),
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }
+  }
+
+  private collectionWithPlugins(row: SqlRow) {
+    const collection = this.collectionFromRow(row)
+    return { ...collection, plugins: collection.pluginIds.flatMap(id => { const plugin = this.publicPlugin(id); return plugin === undefined ? [] : [plugin] }) }
   }
 
   reviews(pluginId: string, query: ReviewQuery = {}) {
@@ -713,6 +896,203 @@ export class AccountStore {
       review.id, pluginId, review.revisionId, userId, review.authorName, rating, body, review.createdAt, review.updatedAt,
     )
     return review
+  }
+
+  recentReviews(query: ReviewQuery = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 20))
+    const base = `FROM reviews rv JOIN plugins p ON p.id=rv.plugin_id AND p.published_revision_id=rv.revision_id
+      JOIN plugin_revisions pr ON pr.id=rv.revision_id JOIN moderation_decisions m ON m.revision_id=rv.revision_id
+      WHERE m.status='approved'`
+    const total = this.scalar(`SELECT COUNT(*) AS value ${base}`)
+    const rows = this.database.prepare(`SELECT rv.*,json_extract(pr.record_json,'$.name') AS plugin_name ${base}
+      ORDER BY rv.updated_at DESC LIMIT ? OFFSET ?`).all(pageSize, (page - 1) * pageSize) as SqlRow[]
+    return {
+      items: rows.map(row => ({ ...this.reviewFromRow(row), pluginName: String(row.plugin_name) })),
+      page, pageSize, total,
+    }
+  }
+
+  discussionThreads(query: { q?: string; pluginId?: string; page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 20))
+    const clauses = ["t.status IN ('open','locked')", `(t.plugin_id IS NULL OR EXISTS(
+      SELECT 1 FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.published_revision_id
+      WHERE p.id=t.plugin_id AND m.status='approved'))`]
+    const params: Array<string | number> = []
+    if (query.q?.trim()) { clauses.push('(t.title LIKE ? OR t.body LIKE ? OR t.author_name LIKE ?)'); params.push(...Array.from({ length: 3 }, () => `%${query.q!.trim()}%`)) }
+    if (query.pluginId) { clauses.push('t.plugin_id=?'); params.push(query.pluginId) }
+    const where = `WHERE ${clauses.join(' AND ')}`
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM discussion_threads t ${where}`, ...params)
+    const rows = this.database.prepare(`SELECT t.*,
+      CASE WHEN t.plugin_id IS NULL THEN NULL ELSE json_extract(pr.record_json,'$.name') END AS plugin_name,
+      (SELECT COUNT(*) FROM discussion_replies r WHERE r.thread_id=t.id AND r.status IN ('visible','deleted')) AS reply_count
+      FROM discussion_threads t LEFT JOIN plugins p ON p.id=t.plugin_id
+      LEFT JOIN plugin_revisions pr ON pr.id=p.published_revision_id ${where}
+      ORDER BY t.updated_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => this.discussionFromRow(row)), page, pageSize, total }
+  }
+
+  discussionThread(threadId: string): DiscussionThread | undefined {
+    const row = this.database.prepare(`SELECT t.*,
+      CASE WHEN t.plugin_id IS NULL THEN NULL ELSE json_extract(pr.record_json,'$.name') END AS plugin_name,
+      (SELECT COUNT(*) FROM discussion_replies r WHERE r.thread_id=t.id AND r.status IN ('visible','deleted')) AS reply_count
+      FROM discussion_threads t LEFT JOIN plugins p ON p.id=t.plugin_id
+      LEFT JOIN plugin_revisions pr ON pr.id=p.published_revision_id
+      WHERE t.id=? AND t.status IN ('open','locked') AND (t.plugin_id IS NULL OR EXISTS(
+        SELECT 1 FROM moderation_decisions m WHERE m.revision_id=p.published_revision_id AND m.status='approved'))`).get(threadId) as SqlRow | undefined
+    return row === undefined ? undefined : this.discussionFromRow(row)
+  }
+
+  async createDiscussion(userId: string, title: string, body: string, pluginId?: string): Promise<DiscussionThread> {
+    if (pluginId !== undefined && !this.isPublicPlugin(pluginId)) throw new Error('CATALOG_PLUGIN_NOT_PUBLIC')
+    const user = this.database.prepare('SELECT username FROM users WHERE id=?').get(userId) as SqlRow
+    const at = nowIso()
+    const id = `thread_${randomUUID()}`
+    this.transaction(() => {
+      this.database.prepare('INSERT INTO discussion_threads VALUES(?,?,?,?,?,?,?,?,?)').run(
+        id, pluginId ?? null, userId, String(user.username), title, body, 'open', at, at,
+      )
+      this.activity('discussion.created', `discussion.created:${id}`, { title }, { actorId: userId, ...(pluginId === undefined ? {} : { pluginId }), threadId: id }, at)
+    })
+    return this.discussionThread(id)!
+  }
+
+  discussionReplies(threadId: string, query: { page?: number; pageSize?: number } = {}) {
+    if (this.discussionThread(threadId) === undefined) return undefined
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 30))
+    const total = this.scalar("SELECT COUNT(*) AS value FROM discussion_replies WHERE thread_id=? AND status IN ('visible','deleted')", threadId)
+    const rows = this.database.prepare(`SELECT * FROM discussion_replies WHERE thread_id=? AND status IN ('visible','deleted')
+      ORDER BY created_at LIMIT ? OFFSET ?`).all(threadId, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => this.replyFromRow(row)), page, pageSize, total }
+  }
+
+  async createDiscussionReply(userId: string, threadId: string, body: string): Promise<DiscussionReply> {
+    const thread = this.discussionThread(threadId)
+    if (thread === undefined) throw new Error('DISCUSSION_NOT_FOUND')
+    if (thread.status === 'locked') throw new Error('DISCUSSION_LOCKED')
+    const user = this.database.prepare('SELECT username FROM users WHERE id=?').get(userId) as SqlRow
+    const at = nowIso()
+    const id = `reply_${randomUUID()}`
+    this.transaction(() => {
+      this.database.prepare('INSERT INTO discussion_replies VALUES(?,?,?,?,?,?,?,?)').run(
+        id, threadId, userId, String(user.username), body, 'visible', at, at,
+      )
+      this.database.prepare('UPDATE discussion_threads SET updated_at=? WHERE id=?').run(at, threadId)
+      if (thread.authorId !== userId) this.notify(
+        thread.authorId, 'discussion.reply', `discussion.reply:${id}:${thread.authorId}`,
+        { threadTitle: thread.title, authorName: String(user.username), replyId: id },
+        { actorId: userId, ...(thread.pluginId === undefined ? {} : { pluginId: thread.pluginId }), threadId }, at,
+      )
+    })
+    return this.replyFromRow(this.database.prepare('SELECT * FROM discussion_replies WHERE id=?').get(id) as SqlRow)
+  }
+
+  async deleteDiscussionContent(userId: string, type: 'thread' | 'reply', id: string): Promise<boolean> {
+    const table = type === 'thread' ? 'discussion_threads' : 'discussion_replies'
+    const row = this.database.prepare(`SELECT author_id FROM ${table} WHERE id=?`).get(id) as SqlRow | undefined
+    if (row === undefined || String(row.author_id) !== userId) return false
+    const status = 'deleted'
+    return Number(this.database.prepare(`UPDATE ${table} SET status=?,body='',updated_at=? WHERE id=? AND author_id=?`).run(status, nowIso(), id, userId).changes) > 0
+  }
+
+  async createReport(userId: string, targetType: 'thread' | 'reply' | 'review' | 'collection', targetId: string, reason: string): Promise<boolean> {
+    if (!this.reportTargetExists(targetType, targetId)) throw new Error('REPORT_TARGET_NOT_FOUND')
+    const result = this.database.prepare(`INSERT OR IGNORE INTO content_reports(
+      id,reporter_id,target_type,target_id,reason,status,created_at
+    ) VALUES(?,?,?,?,?,'pending',?)`).run(`report_${randomUUID()}`, userId, targetType, targetId, reason, nowIso())
+    return Number(result.changes) > 0
+  }
+
+  notifications(userId: string, query: { page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const total = this.scalar('SELECT COUNT(*) AS value FROM notifications WHERE user_id=?', userId)
+    const unread = this.scalar('SELECT COUNT(*) AS value FROM notifications WHERE user_id=? AND read_at IS NULL', userId)
+    const rows = this.database.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?')
+      .all(userId, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => this.notificationFromRow(row)), page, pageSize, total, unread }
+  }
+
+  markNotificationsRead(userId: string, ids?: string[]): number {
+    const at = nowIso()
+    if (ids === undefined || ids.length === 0) return Number(this.database.prepare('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL').run(at, userId).changes)
+    const selected = [...new Set(ids)].slice(0, 100)
+    if (selected.length === 0) return 0
+    const placeholders = selected.map(() => '?').join(',')
+    return Number(this.database.prepare(`UPDATE notifications SET read_at=? WHERE user_id=? AND id IN (${placeholders}) AND read_at IS NULL`).run(at, userId, ...selected).changes)
+  }
+
+  activityFeed(query: { page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const visible = `WHERE (thread_id IS NULL OR EXISTS(
+        SELECT 1 FROM discussion_threads t WHERE t.id=activity_events.thread_id AND t.status IN ('open','locked')
+      )) AND (collection_id IS NULL OR EXISTS(
+        SELECT 1 FROM collections c WHERE c.id=activity_events.collection_id AND c.visibility='public' AND c.moderation_status='visible'
+      )) AND (plugin_id IS NULL OR EXISTS(
+        SELECT 1 FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.published_revision_id
+        WHERE p.id=activity_events.plugin_id AND m.status='approved'
+      ))`
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM activity_events ${visible}`)
+    const rows = this.database.prepare(`SELECT * FROM activity_events ${visible} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+      .all(pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => this.activityFromRow(row)), page, pageSize, total }
+  }
+
+  recordPresenceSnapshot(online: number, at = new Date()): void {
+    const bucket = new Date(Math.floor(at.getTime() / 300_000) * 300_000).toISOString()
+    this.database.prepare(`INSERT INTO presence_snapshots(bucket_at,peak,samples,total) VALUES(?,?,1,?)
+      ON CONFLICT(bucket_at) DO UPDATE SET peak=MAX(peak,excluded.peak),samples=samples+1,total=total+excluded.total`).run(bucket, online, online)
+    this.database.prepare("DELETE FROM presence_snapshots WHERE bucket_at < datetime('now','-8 days')").run()
+  }
+
+  presenceHistory() {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const rows = this.database.prepare('SELECT * FROM presence_snapshots WHERE bucket_at>=? ORDER BY bucket_at').all(since) as SqlRow[]
+    return {
+      peak24h: rows.reduce((peak, row) => Math.max(peak, Number(row.peak)), 0),
+      buckets: rows.map(row => ({ at: String(row.bucket_at), peak: Number(row.peak), average: Number(row.samples) === 0 ? 0 : Math.round(Number(row.total) / Number(row.samples)) })),
+    }
+  }
+
+  private discussionFromRow(row: SqlRow): DiscussionThread {
+    return {
+      id: String(row.id), ...(row.plugin_id === null ? {} : { pluginId: String(row.plugin_id) }),
+      ...(row.plugin_name === null || row.plugin_name === undefined ? {} : { pluginName: String(row.plugin_name) }),
+      authorId: String(row.author_id), authorName: String(row.author_name), title: String(row.title), body: String(row.body),
+      status: String(row.status) as DiscussionStatus, replyCount: Number(row.reply_count ?? 0),
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }
+  }
+
+  private replyFromRow(row: SqlRow): DiscussionReply {
+    const status = String(row.status) as ReplyStatus
+    return {
+      id: String(row.id), threadId: String(row.thread_id), authorId: String(row.author_id), authorName: String(row.author_name),
+      body: status === 'deleted' ? '' : String(row.body), status, createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    }
+  }
+
+  private notificationFromRow(row: SqlRow): NotificationView {
+    return {
+      id: String(row.id), type: String(row.type),
+      ...(row.plugin_id === null ? {} : { pluginId: String(row.plugin_id) }),
+      ...(row.thread_id === null ? {} : { threadId: String(row.thread_id) }),
+      payload: JSON.parse(String(row.payload_json)) as Record<string, unknown>,
+      ...(row.read_at === null ? {} : { readAt: String(row.read_at) }), createdAt: String(row.created_at),
+    }
+  }
+
+  private activityFromRow(row: SqlRow): ActivityEvent {
+    return {
+      id: String(row.id), type: String(row.type),
+      ...(row.plugin_id === null ? {} : { pluginId: String(row.plugin_id) }),
+      ...(row.collection_id === null ? {} : { collectionId: String(row.collection_id) }),
+      ...(row.thread_id === null ? {} : { threadId: String(row.thread_id) }),
+      payload: JSON.parse(String(row.payload_json)) as Record<string, unknown>, createdAt: String(row.created_at),
+    }
   }
 
   pluginState(userId: string, pluginId: string) {
@@ -765,6 +1145,7 @@ export class AccountStore {
       subscriptionCount: this.scalar('SELECT COUNT(*) AS value FROM subscriptions WHERE plugin_id=?', pluginId),
       reviewCount,
       reviewScore: reviewCount === 0 ? 0 : Math.round(Number(aggregate?.score ?? 0) * 10) / 10,
+      discussionCount: this.scalar("SELECT COUNT(*) AS value FROM discussion_threads WHERE plugin_id=? AND status IN ('open','locked')", pluginId),
     }
   }
 
@@ -887,15 +1268,133 @@ export class AccountStore {
     const status = update.status ?? String(current.status) as ModerationStatus
     const featured = update.featured ?? Number(current.featured) === 1
     const reason = update.reason ?? (current.reason === null ? undefined : String(current.reason))
+    const publicationChanged = status === 'approved' && String(plugin.published_revision_id ?? '') !== revisionId
+    const revisionRecord = this.database.prepare('SELECT record_json FROM plugin_revisions WHERE id=?').get(revisionId) as SqlRow
+    const publishedRecord = JSON.parse(String(revisionRecord.record_json)) as GitHubPluginRecord
     this.transaction(() => {
       this.database.prepare('UPDATE moderation_decisions SET status=?,featured=?,reason=?,updated_at=?,updated_by=? WHERE revision_id=?').run(
         status, featured ? 1 : 0, reason ?? null, nowIso(), actorId, revisionId,
       )
       if (status === 'approved') this.database.prepare('UPDATE plugins SET published_revision_id=? WHERE id=?').run(revisionId, pluginId)
       else if (String(plugin.published_revision_id) === revisionId) this.database.prepare('UPDATE plugins SET published_revision_id=NULL WHERE id=?').run(pluginId)
+      if (publicationChanged) {
+        const at = nowIso()
+        this.activity('plugin.published', `plugin.published:${revisionId}`, { name: publishedRecord.name, revisionId }, { actorId, pluginId }, at)
+        const subscribers = this.database.prepare('SELECT user_id FROM subscriptions WHERE plugin_id=?').all(pluginId) as SqlRow[]
+        for (const subscriber of subscribers) this.notify(
+          String(subscriber.user_id), 'plugin.updated', `plugin.updated:${revisionId}:${String(subscriber.user_id)}`,
+          { name: publishedRecord.name, revisionId }, { actorId, pluginId }, at,
+        )
+      }
       this.audit(actorId, 'plugin.moderate', pluginId, { revisionId, before: current.status, after: status, reason, featured }, context)
     })
     return true
+  }
+
+  communityModeration(query: { q?: string; type?: string; status?: string; page?: number; pageSize?: number } = {}) {
+    const threadRows = this.database.prepare(`SELECT id,title AS title,body,author_name,status,updated_at,
+      (SELECT COUNT(*) FROM content_reports cr WHERE cr.target_type='thread' AND cr.target_id=discussion_threads.id AND cr.status='pending') AS report_count
+      FROM discussion_threads WHERE status<>'deleted'`).all() as SqlRow[]
+    const replyRows = this.database.prepare(`SELECT id,'讨论回复' AS title,body,author_name,status,updated_at,
+      (SELECT COUNT(*) FROM content_reports cr WHERE cr.target_type='reply' AND cr.target_id=discussion_replies.id AND cr.status='pending') AS report_count
+      FROM discussion_replies WHERE status<>'deleted'`).all() as SqlRow[]
+    const collectionRows = this.database.prepare(`SELECT c.id,c.name AS title,c.description AS body,u.username AS author_name,c.moderation_status AS status,c.updated_at,
+      (SELECT COUNT(*) FROM content_reports cr WHERE cr.target_type='collection' AND cr.target_id=c.id AND cr.status='pending') AS report_count
+      FROM collections c JOIN users u ON u.id=c.owner_id WHERE c.visibility='public'`).all() as SqlRow[]
+    let items = [
+      ...threadRows.map(row => ({ type: 'thread', ...this.moderationItem(row) })),
+      ...replyRows.map(row => ({ type: 'reply', ...this.moderationItem(row) })),
+      ...collectionRows.map(row => ({ type: 'collection', ...this.moderationItem(row) })),
+    ]
+    if (query.type) items = items.filter(item => item.type === query.type)
+    if (query.status) items = items.filter(item => item.status === query.status)
+    if (query.q?.trim()) { const needle = query.q.trim().toLowerCase(); items = items.filter(item => `${item.title} ${item.body} ${item.authorName}`.toLowerCase().includes(needle)) }
+    items.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    return { items: items.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: items.length }
+  }
+
+  reports(query: { status?: string; page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1)
+    const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const where = query.status ? 'WHERE cr.status=?' : ''
+    const params = query.status ? [query.status] : []
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM content_reports cr ${where}`, ...params)
+    const rows = this.database.prepare(`SELECT cr.*,u.username AS reporter_name FROM content_reports cr JOIN users u ON u.id=cr.reporter_id
+      ${where} ORDER BY cr.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => ({
+      id: String(row.id), reporterId: String(row.reporter_id), reporterName: String(row.reporter_name),
+      targetType: String(row.target_type), targetId: String(row.target_id), reason: String(row.reason), status: String(row.status),
+      target: this.reportTargetSummary(String(row.target_type), String(row.target_id)), createdAt: String(row.created_at),
+      ...(row.resolved_at === null ? {} : { resolvedAt: String(row.resolved_at) }),
+      ...(row.resolution === null ? {} : { resolution: String(row.resolution) }),
+    })), page, pageSize, total }
+  }
+
+  async resolveReport(actorId: string, reportId: string, status: Exclude<ReportStatus, 'pending'>, resolution: string, context: { ip?: string; requestId?: string } = {}): Promise<boolean> {
+    const row = this.database.prepare('SELECT status FROM content_reports WHERE id=?').get(reportId) as SqlRow | undefined
+    if (row === undefined) return false
+    const at = nowIso()
+    this.transaction(() => {
+      this.database.prepare('UPDATE content_reports SET status=?,resolved_at=?,resolved_by=?,resolution=? WHERE id=?').run(status, at, actorId, resolution, reportId)
+      this.audit(actorId, 'report.resolve', reportId, { before: row.status, after: status, resolution }, context)
+    })
+    return true
+  }
+
+  async moderateDiscussionContent(actorId: string, type: 'thread' | 'reply', id: string, status: DiscussionStatus | ReplyStatus, reason: string, context: { ip?: string; requestId?: string } = {}): Promise<boolean> {
+    const table = type === 'thread' ? 'discussion_threads' : 'discussion_replies'
+    const row = this.database.prepare(`SELECT status FROM ${table} WHERE id=?`).get(id) as SqlRow | undefined
+    if (row === undefined) return false
+    this.transaction(() => {
+      this.database.prepare(`UPDATE ${table} SET status=?,updated_at=? WHERE id=?`).run(status, nowIso(), id)
+      this.audit(actorId, `discussion.${type}.moderate`, id, { before: row.status, after: status, reason }, context)
+    })
+    return true
+  }
+
+  private moderationItem(row: SqlRow) {
+    return {
+      id: String(row.id), title: String(row.title), body: String(row.body), authorName: String(row.author_name),
+      status: String(row.status), reportCount: Number(row.report_count), updatedAt: String(row.updated_at),
+    }
+  }
+
+  private reportTargetExists(type: 'thread' | 'reply' | 'review' | 'collection', id: string): boolean {
+    const table = { thread: 'discussion_threads', reply: 'discussion_replies', review: 'reviews', collection: 'collections' }[type]
+    return this.scalar(`SELECT COUNT(*) AS value FROM ${table} WHERE id=?`, id) > 0
+  }
+
+  private reportTargetSummary(type: string, id: string) {
+    const definitions: Record<string, { table: string; title: string; body: string }> = {
+      thread: { table: 'discussion_threads', title: 'title', body: 'body' },
+      reply: { table: 'discussion_replies', title: "'讨论回复'", body: 'body' },
+      review: { table: 'reviews', title: "'插件评价'", body: 'body' },
+      collection: { table: 'collections', title: 'name', body: 'description' },
+    }
+    const definition = definitions[type]
+    if (definition === undefined) return null
+    const row = this.database.prepare(`SELECT ${definition.title} AS title,${definition.body} AS body FROM ${definition.table} WHERE id=?`).get(id) as SqlRow | undefined
+    return row === undefined ? null : { title: String(row.title), body: String(row.body) }
+  }
+
+  private notify(userId: string, type: string, dedupeKey: string, payload: Record<string, unknown>, links: { actorId?: string; pluginId?: string; threadId?: string } = {}, at = nowIso()): void {
+    this.database.prepare(`INSERT OR IGNORE INTO notifications(
+      id,user_id,type,actor_id,plugin_id,thread_id,payload_json,dedupe_key,read_at,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,NULL,?)`).run(
+      `notification_${randomUUID()}`, userId, type, links.actorId ?? null, links.pluginId ?? null,
+      links.threadId ?? null, JSON.stringify(payload), dedupeKey, at,
+    )
+  }
+
+  private activity(type: string, dedupeKey: string, payload: Record<string, unknown>, links: { actorId?: string; pluginId?: string; collectionId?: string; threadId?: string } = {}, at = nowIso()): void {
+    this.database.prepare(`INSERT OR IGNORE INTO activity_events(
+      id,type,actor_id,plugin_id,collection_id,thread_id,payload_json,dedupe_key,created_at
+    ) VALUES(?,?,?,?,?,?,?,?,?)`).run(
+      `event_${randomUUID()}`, type, links.actorId ?? null, links.pluginId ?? null,
+      links.collectionId ?? null, links.threadId ?? null, JSON.stringify(payload), dedupeKey, at,
+    )
   }
 
   summary() {
@@ -905,6 +1404,9 @@ export class AccountStore {
       approvedPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.published_revision_id WHERE m.status='approved'"),
       pendingPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.latest_revision_id WHERE m.status='pending'"),
       rejectedPlugins: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN moderation_decisions m ON m.revision_id=p.latest_revision_id WHERE m.status IN ('rejected','hidden')"),
+      discussions: this.scalar("SELECT COUNT(*) AS value FROM discussion_threads WHERE status IN ('open','locked')"),
+      publicCollections: this.scalar("SELECT COUNT(*) AS value FROM collections WHERE visibility='public' AND moderation_status='visible'"),
+      pendingReports: this.scalar("SELECT COUNT(*) AS value FROM content_reports WHERE status='pending'"),
       githubSyncedAt: this.latestCompletedSyncAt() ?? null, latestSync: this.listSyncRuns(1).items[0] ?? null,
       audit: this.auditRecords({ pageSize: 20 }).items,
     }

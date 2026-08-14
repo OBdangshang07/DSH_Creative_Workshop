@@ -3,7 +3,7 @@ import { api, escapeHtml, formatTime } from '/js/account-api.js';
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.0',
+  version: '1.1.1',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },
@@ -11,6 +11,9 @@ const state = {
   pageSize: 24,
   currentPlugin: null,
   reviewPage: 1,
+  unreadNotifications: 0,
+  presenceTimer: null,
+  communityPage: 1,
 };
 
 const icons = {
@@ -71,7 +74,7 @@ function showError(error, fallback = '操作失败，请稍后重试') {
 function installAccountUi() {
   const statusArea = document.querySelector('.steam-hero-subnav > div:last-child');
   if (statusArea && !document.getElementById('dshAccountButton')) {
-    statusArea.insertAdjacentHTML('afterbegin', '<span class="dsh-api-badge" id="dshApiBadge">● API 检测中</span><button class="dsh-account-btn" id="dshAccountButton">登录 / 注册</button>');
+    statusArea.insertAdjacentHTML('afterbegin', '<span class="dsh-api-badge" id="dshApiBadge">● API 检测中</span><span class="dsh-presence-badge" id="dshPresenceBadge" title="过去 90 秒内有前台活动的浏览器">当前在线 —</span><button class="dsh-account-btn" id="dshAccountButton">登录 / 注册</button>');
   }
   document.body.insertAdjacentHTML('beforeend', `
     <div class="dsh-dialog" id="dshDialog" role="dialog" aria-modal="true" aria-labelledby="dshDialogTitle">
@@ -100,11 +103,16 @@ function closeDialog() {
 
 function updateIdentity() {
   const button = document.getElementById('dshAccountButton');
-  if (button) button.textContent = state.user ? `${state.user.username}${state.user.role === 'admin' ? ' · 管理' : ''}` : '登录 / 注册';
+  if (button) {
+    button.textContent = state.user ? `${state.user.username}${state.user.role === 'admin' ? ' · 管理' : ''}${state.unreadNotifications ? ` · ${state.unreadNotifications}` : ''}` : '登录 / 注册';
+    button.title = state.unreadNotifications ? `${state.unreadNotifications} 条未读通知` : '';
+  }
   const count = document.getElementById('topSubCount');
   if (count) count.textContent = `${state.user?.subscriptions?.length || 0} 件`;
   const menuCount = document.getElementById('menuSubCount');
   if (menuCount) menuCount.textContent = String(state.user?.subscriptions?.length || 0);
+  const noticeCount = document.getElementById('menuNoticeCount');
+  if (noticeCount) noticeCount.textContent = String(state.unreadNotifications);
   const version = document.getElementById('topProfileName');
   if (version) version.textContent = `v${state.version}`;
 }
@@ -116,12 +124,37 @@ function setApiStatus(online) {
   badge.classList.toggle('offline', !online);
 }
 
+function setPresenceStatus(result) {
+  const badge = document.getElementById('dshPresenceBadge');
+  if (!badge) return;
+  badge.textContent = Number.isFinite(result?.online) ? `当前在线 ${result.online}` : '当前在线 —';
+  badge.classList.toggle('offline', !Number.isFinite(result?.online));
+}
+
+async function heartbeatPresence() {
+  if (document.visibilityState !== 'visible') return;
+  try {
+    const response = await fetch('/api/v1/presence/heartbeat', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!response.ok) throw new Error('presence unavailable');
+    setPresenceStatus(await response.json());
+  } catch { setPresenceStatus(null); }
+}
+
+function startPresence() {
+  heartbeatPresence();
+  clearInterval(state.presenceTimer);
+  state.presenceTimer = window.setInterval(heartbeatPresence, 30_000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') heartbeatPresence(); });
+}
+
 function wireHeader() {
   document.querySelectorAll('.js-nav-home, .steam-hub-nav-item[data-tab="workshop"], .steam-hub-nav-item[data-tab="all"]').forEach(node => node.addEventListener('click', () => navigateCatalog(true)));
   document.querySelector('.js-nav-about')?.addEventListener('click', () => renderAbout(true));
-  document.querySelector('.js-nav-discussions')?.addEventListener('click', () => toast('讨论区尚未启用；v1.1.0 使用插件详情中的真实社区评价。'));
+  document.querySelectorAll('.js-nav-discussions, .steam-hub-nav-item[data-tab="discussions"]').forEach(node => node.addEventListener('click', () => renderDiscussions(true)));
+  document.querySelector('.steam-hub-nav-item[data-tab="news"]')?.addEventListener('click', () => renderActivity(true));
+  document.querySelector('.steam-hub-nav-item[data-tab="reviews"]')?.addEventListener('click', () => renderGlobalReviews(true));
 
-  document.querySelectorAll('.steam-hub-nav-item:not([data-tab="workshop"]):not([data-tab="all"])').forEach(node => {
+  document.querySelectorAll('.steam-hub-nav-item[data-tab="screenshots"], .steam-hub-nav-item[data-tab="artwork"], .steam-hub-nav-item[data-tab="streams"], .steam-hub-nav-item[data-tab="videos"], .steam-hub-nav-item[data-tab="guides"]').forEach(node => {
     node.setAttribute('aria-disabled', 'true');
     node.title = '该社区板块尚未接入真实后端';
     node.addEventListener('click', () => toast('该社区板块尚未接入真实后端，本版本不会模拟发布成功。'));
@@ -135,12 +168,14 @@ function wireHeader() {
   myButton?.addEventListener('click', event => { event.stopPropagation(); myMenu?.classList.toggle('is-open'); browseMenu?.classList.remove('is-open'); });
   document.addEventListener('click', () => { browseMenu?.classList.remove('is-open'); myMenu?.classList.remove('is-open'); });
   browseMenu?.querySelectorAll('[data-kind]').forEach(item => item.addEventListener('click', () => {
+    if (item.dataset.kind === 'collection') return renderPublicCollections(true);
     state.filters = { ...state.filters, kind: item.dataset.kind === 'all' ? '' : item.dataset.kind, page: 1 };
     navigateCatalog(true);
   }));
   document.querySelector('.js-open-subscribed-menu')?.addEventListener('click', () => state.user ? openAccount('subscriptions') : goLogin());
   document.querySelector('.js-open-profile-switch')?.addEventListener('click', () => state.user ? openAccount('sessions') : goLogin());
   document.querySelector('.js-open-create-col')?.addEventListener('click', () => state.user ? openAccount('collections') : goLogin());
+  document.querySelector('.js-open-notifications')?.addEventListener('click', () => state.user ? openAccount('notifications') : goLogin());
   document.getElementById('topSubCount')?.addEventListener('click', () => state.user ? openAccount('subscriptions') : goLogin());
 }
 
@@ -170,6 +205,7 @@ function syncCatalogUrl(push = false) {
 }
 
 function navigateCatalog(push = false, nextFilters = null) {
+  activateHub('workshop');
   if (nextFilters) state.filters = { ...state.filters, ...nextFilters, page: 1 };
   syncCatalogUrl(push);
   loadCatalog();
@@ -365,6 +401,7 @@ function detailHtml(plugin, reviews, pluginState) {
             <button class="dsh-button ${favorited ? 'success' : ''}" id="detailFavorite" type="button">${icons.heart} ${favorited ? '已收藏' : '收藏'}</button>
             <button class="dsh-button ${subscribed ? 'success' : ''}" id="detailSubscribe" type="button">${subscribed ? icons.check : icons.plus} ${subscribed ? '已订阅更新' : '订阅更新'}</button>
             <button class="dsh-button" id="addToCollection" type="button">加入合集</button>
+            <button class="dsh-button" id="pluginDiscussions" type="button">讨论 ${formatNumber(community.discussionCount || 0)}</button>
             <button class="dsh-button" id="sharePlugin" type="button">复制站内链接</button>
           </div>
         </div>
@@ -374,7 +411,7 @@ function detailHtml(plugin, reviews, pluginState) {
         <div>
           <section class="dsh-panel"><h2>标准化信息</h2><div class="dsh-stat-grid">
             ${stat('GitHub Stars', formatNumber(plugin.stars))}${stat('Forks', formatNumber(plugin.forks))}${stat('语言', plugin.language || 'Other')}${stat('许可证', plugin.license || '未声明')}
-            ${stat('收藏', formatNumber(community.favoriteCount))}${stat('订阅', formatNumber(community.subscriptionCount))}${stat('当前评分', community.reviewScore ? community.reviewScore.toFixed(1) : '暂无')}${stat('最近推送', formatTime(plugin.pushedAt))}
+            ${stat('收藏', formatNumber(community.favoriteCount))}${stat('订阅', formatNumber(community.subscriptionCount))}${stat('当前评分', community.reviewScore ? community.reviewScore.toFixed(1) : '暂无')}${stat('讨论', formatNumber(community.discussionCount || 0))}${stat('最近推送', formatTime(plugin.pushedAt))}
           </div></section>
           <section class="dsh-panel"><h2>Bundle 验证证据</h2><div class="dsh-code-list">
             ${codeRow('Revision', plugin.revisionId)}${codeRow('固定 Commit', verification.commitSha)}${codeRow('package.json', verification.packageJsonPath)}${codeRow('Cordis Patch', verification.patchPath)}${codeRow('Entry IDs', (verification.entryIds || []).join(', ') || '—')}${codeRow('Module Specifiers', (verification.moduleSpecifiers || []).join(', ') || '—')}${codeRow('验证器', verification.verifierVersion || '—')}${codeRow('验证时间', formatTime(verification.checkedAt))}
@@ -415,6 +452,7 @@ function wireDetail(plugin, pluginState) {
   document.getElementById('detailFavorite')?.addEventListener('click', () => toggleDetailRelation('favorites', plugin.id));
   document.getElementById('detailSubscribe')?.addEventListener('click', () => toggleDetailRelation('subscriptions', plugin.id));
   document.getElementById('addToCollection')?.addEventListener('click', () => state.user ? openPluginCollections(plugin) : goLogin());
+  document.getElementById('pluginDiscussions')?.addEventListener('click', () => renderDiscussions(true, plugin.id));
   document.getElementById('sharePlugin')?.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(location.href); toast('站内插件详情链接已复制。'); } catch { toast('无法访问剪贴板，请从地址栏复制链接。'); }
   });
@@ -444,7 +482,7 @@ async function toggleDetailRelation(relation, pluginId) {
 }
 
 function accountNav(view) {
-  const items = [['overview','概览'],['favorites','收藏'],['subscriptions','订阅'],['collections','合集'],['sessions','设备会话'],['security','安全']];
+  const items = [['overview','概览'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['collections','合集'],['sessions','设备会话'],['security','安全']];
   return `<nav class="dsh-account-nav">${items.map(([id,label]) => `<button class="dsh-button ${id === view ? 'active' : ''}" data-account-view="${id}" type="button">${label}</button>`).join('')}</nav>`;
 }
 
@@ -464,6 +502,7 @@ async function renderAccount(view) {
   wireAccountNav();
   try {
     if (view === 'overview') renderAccountOverview(body, view);
+    else if (view === 'notifications') await renderNotifications(body);
     else if (view === 'favorites' || view === 'subscriptions') await renderRelations(body, view);
     else if (view === 'collections') await renderCollections(body);
     else if (view === 'sessions') await renderSessions(body);
@@ -477,6 +516,23 @@ function renderAccountOverview(body, view) {
   body.innerHTML = `${accountNav(view)}<div class="dsh-panel"><h2>${escapeHtml(state.user.username)}</h2><div class="dsh-stat-grid">${stat('角色', state.user.role === 'admin' ? '管理员' : '普通用户')}${stat('收藏', formatNumber(state.user.favorites.length))}${stat('订阅', formatNumber(state.user.subscriptions.length))}${stat('注册时间', formatTime(state.user.createdAt))}${stat('工坊版本', `v${state.version}`)}${stat('账号状态', state.user.status)}</div><div class="dsh-detail-actions">${state.user.role === 'admin' ? '<a class="dsh-button primary" href="/admin/">打开管理控制台</a>' : ''}<button class="dsh-button danger" id="logoutAccount" type="button">退出登录</button></div></div>`;
   wireAccountNav();
   document.getElementById('logoutAccount')?.addEventListener('click', logout);
+}
+
+function notificationText(item) {
+  if (item.type === 'plugin.updated') return `你订阅的 ${item.payload.name || '插件'} 发布了新 Revision`;
+  if (item.type === 'discussion.reply') return `${item.payload.authorName || '有用户'} 回复了讨论“${item.payload.threadTitle || ''}”`;
+  return String(item.payload.message || item.type);
+}
+
+async function renderNotifications(body) {
+  const result = await api('/me/notifications?pageSize=100');
+  state.unreadNotifications = result.unread;
+  updateIdentity();
+  body.innerHTML = `${accountNav('notifications')}<div class="dsh-detail-actions" style="padding:0 0 12px"><button class="dsh-button" id="markAllNotifications" type="button" ${result.unread ? '' : 'disabled'}>全部标为已读</button></div><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item ${item.readAt ? '' : 'unread'}"><div><h3>${escapeHtml(notificationText(item))}</h3><p>${formatTime(item.createdAt)}${item.readAt ? '' : ' · 未读'}</p></div><div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-notification-plugin="${attribute(item.pluginId)}" type="button">查看插件</button>` : ''}${item.threadId ? `<button class="dsh-button" data-notification-thread="${attribute(item.threadId)}" type="button">查看讨论</button>` : ''}</div></div>`).join('') : '<div class="dsh-empty">暂时没有通知。</div>'}</div>`;
+  wireAccountNav();
+  document.getElementById('markAllNotifications')?.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); await renderNotifications(body); });
+  body.querySelectorAll('[data-notification-plugin]').forEach(button => button.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); closeDialog(); navigatePlugin(button.dataset.notificationPlugin); }));
+  body.querySelectorAll('[data-notification-thread]').forEach(button => button.addEventListener('click', async () => { await api('/me/notifications/read', { method: 'POST', body: JSON.stringify({}) }); closeDialog(); renderDiscussionDetail(button.dataset.notificationThread, true); }));
 }
 
 async function renderRelations(body, relation) {
@@ -497,6 +553,8 @@ function collectionEditor(collection) {
   return `<section class="dsh-panel" data-collection-card="${attribute(collection.id)}"><div class="dsh-form-grid">
     <label class="dsh-field">名称<input data-collection-name value="${attribute(collection.name)}" maxlength="80"></label>
     <label class="dsh-field">说明<input data-collection-description value="${attribute(collection.description)}" maxlength="500"></label>
+    <label class="dsh-field">可见性<select data-collection-visibility><option value="private" ${collection.visibility === 'private' ? 'selected' : ''}>仅自己可见</option><option value="public" ${collection.visibility === 'public' ? 'selected' : ''}>公开到合集广场</option></select></label>
+    <div class="dsh-field"><span>治理状态</span><strong>${escapeHtml(collection.moderationStatus === 'hidden' ? '已被管理员隐藏' : '正常')}</strong></div>
     <div class="wide"><div class="dsh-chip-row">${collection.pluginIds.length ? collection.pluginIds.map(id => `<button class="dsh-chip" data-remove-collection-plugin="${attribute(id)}" type="button" title="从合集移除">${escapeHtml(id)} ×</button>`).join('') : '<span style="color:#8f98a0;font-size:11px">空合集</span>'}</div></div>
     <div class="wide dsh-list-actions"><button class="dsh-button primary" data-save-collection type="button">保存更改</button><button class="dsh-button danger" data-delete-collection type="button">删除合集</button></div>
   </div></section>`;
@@ -504,11 +562,11 @@ function collectionEditor(collection) {
 
 async function renderCollections(body) {
   const result = await api('/me/collections');
-  body.innerHTML = `${accountNav('collections')}<section class="dsh-panel"><h2>新建合集</h2><form class="dsh-form-grid" id="createCollectionForm"><label class="dsh-field">名称<input name="name" minlength="2" maxlength="80" required></label><label class="dsh-field">说明<input name="description" maxlength="500"></label><button class="dsh-button primary" type="submit">创建空合集</button></form><p class="dsh-message" id="collectionMessage"></p></section><div class="dsh-list">${result.items.map(collectionEditor).join('') || '<div class="dsh-empty">尚未创建合集。</div>'}</div>`;
+  body.innerHTML = `${accountNav('collections')}<section class="dsh-panel"><h2>新建合集</h2><form class="dsh-form-grid" id="createCollectionForm"><label class="dsh-field">名称<input name="name" minlength="2" maxlength="80" required></label><label class="dsh-field">说明<input name="description" maxlength="500"></label><label class="dsh-field">可见性<select name="visibility"><option value="private">仅自己可见</option><option value="public">公开到合集广场</option></select></label><button class="dsh-button primary" type="submit">创建空合集</button></form><p class="dsh-message" id="collectionMessage"></p></section><div class="dsh-list">${result.items.map(collectionEditor).join('') || '<div class="dsh-empty">尚未创建合集。</div>'}</div>`;
   wireAccountNav();
   document.getElementById('createCollectionForm')?.addEventListener('submit', async event => {
     event.preventDefault(); const data = new FormData(event.currentTarget);
-    try { await api('/me/collections', { method: 'POST', body: JSON.stringify({ name: String(data.get('name')).trim(), description: String(data.get('description') || '').trim(), pluginIds: [] }) }); await renderCollections(body); }
+    try { await api('/me/collections', { method: 'POST', body: JSON.stringify({ name: String(data.get('name')).trim(), description: String(data.get('description') || '').trim(), visibility: String(data.get('visibility') || 'private'), pluginIds: [] }) }); await renderCollections(body); }
     catch (error) { document.getElementById('collectionMessage').textContent = error.message; }
   });
   body.querySelectorAll('[data-collection-card]').forEach(card => {
@@ -516,7 +574,7 @@ async function renderCollections(body) {
     card.querySelectorAll('[data-remove-collection-plugin]').forEach(button => button.addEventListener('click', () => { collection.pluginIds = collection.pluginIds.filter(id => id !== button.dataset.removeCollectionPlugin); button.remove(); }));
     card.querySelector('[data-save-collection]')?.addEventListener('click', async () => {
       try {
-        await api(`/me/collections/${encodeURIComponent(collection.id)}`, { method: 'PATCH', body: JSON.stringify({ name: card.querySelector('[data-collection-name]').value.trim(), description: card.querySelector('[data-collection-description]').value.trim(), pluginIds: collection.pluginIds }) });
+        await api(`/me/collections/${encodeURIComponent(collection.id)}`, { method: 'PATCH', body: JSON.stringify({ name: card.querySelector('[data-collection-name]').value.trim(), description: card.querySelector('[data-collection-description]').value.trim(), visibility: card.querySelector('[data-collection-visibility]').value, pluginIds: collection.pluginIds }) });
         toast('合集已保存。'); await renderCollections(body);
       } catch (error) { showError(error); }
     });
@@ -534,13 +592,13 @@ async function openPluginCollections(plugin) {
     const collection = result.items.find(item => item.id === input.dataset.collectionToggle);
     const pluginIds = input.checked ? [...new Set([...collection.pluginIds, plugin.id])] : collection.pluginIds.filter(id => id !== plugin.id);
     input.disabled = true;
-    try { const updated = await api(`/me/collections/${encodeURIComponent(collection.id)}`, { method: 'PATCH', body: JSON.stringify({ name: collection.name, description: collection.description, pluginIds }) }); collection.pluginIds = updated.collection.pluginIds; toast(input.checked ? '已加入合集。' : '已从合集移除。'); }
+    try { const updated = await api(`/me/collections/${encodeURIComponent(collection.id)}`, { method: 'PATCH', body: JSON.stringify({ name: collection.name, description: collection.description, visibility: collection.visibility, pluginIds }) }); collection.pluginIds = updated.collection.pluginIds; toast(input.checked ? '已加入合集。' : '已从合集移除。'); }
     catch (error) { input.checked = !input.checked; showError(error); }
     finally { input.disabled = false; }
   }));
   document.getElementById('quickCollectionForm')?.addEventListener('submit', async event => {
     event.preventDefault(); const data = new FormData(event.currentTarget);
-    try { await api('/me/collections', { method: 'POST', body: JSON.stringify({ name: String(data.get('name')).trim(), description: String(data.get('description') || '').trim(), pluginIds: [plugin.id] }) }); toast('合集已创建并加入当前插件。'); closeDialog(); }
+    try { await api('/me/collections', { method: 'POST', body: JSON.stringify({ name: String(data.get('name')).trim(), description: String(data.get('description') || '').trim(), visibility: 'private', pluginIds: [plugin.id] }) }); toast('合集已创建并加入当前插件。'); closeDialog(); }
     catch (error) { document.getElementById('quickCollectionMessage').textContent = error.message; }
   });
 }
@@ -567,7 +625,129 @@ function renderSecurity(body) {
 }
 
 async function logout() {
-  try { await api('/auth/logout', { method: 'POST' }); } finally { state.user = null; updateIdentity(); closeDialog(); navigateCatalog(true); }
+  try { await api('/auth/logout', { method: 'POST' }); } finally { state.user = null; state.unreadNotifications = 0; updateIdentity(); closeDialog(); navigateCatalog(true); }
+}
+
+function activateHub(tab) {
+  document.querySelectorAll('.steam-hub-nav-item').forEach(item => item.classList.toggle('is-active', item.dataset.tab === tab));
+}
+
+function communityPager(result, handlerName) {
+  const pages = Math.max(1, Math.ceil(result.total / result.pageSize));
+  if (pages <= 1) return '';
+  return `<nav class="dsh-pagination"><button class="dsh-button" data-community-page="${result.page - 1}" ${result.page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${result.page}/${pages} 页</span><button class="dsh-button" data-community-page="${result.page + 1}" ${result.page >= pages ? 'disabled' : ''}>下一页</button><span hidden data-page-handler="${handlerName}"></span></nav>`;
+}
+
+async function reportContent(targetType, targetId) {
+  if (!state.user) return goLogin();
+  const reason = prompt('请说明举报原因（4–500 字）');
+  if (!reason) return;
+  try { await api('/reports', { method: 'POST', body: JSON.stringify({ targetType, targetId, reason: reason.trim() }) }); toast('举报已提交，管理员会进行审核。'); }
+  catch (error) { showError(error); }
+}
+
+async function renderDiscussions(push = false, pluginId = null) {
+  state.communityPage = push ? 1 : state.communityPage;
+  const params = new URLSearchParams({ view: 'discussions' });
+  if (pluginId) params.set('pluginId', pluginId);
+  if (push) history.pushState({}, '', `/?${params}`);
+  activateHub('discussions');
+  main.innerHTML = '<div class="dsh-loading">正在读取讨论区…</div>';
+  try {
+    const query = new URLSearchParams({ page: String(state.communityPage), pageSize: '20' });
+    if (pluginId) query.set('pluginId', pluginId);
+    const [result, catalog] = await Promise.all([api(`/discussions?${query}`), api('/plugins?pageSize=100&sort=name')]);
+    const selectedPlugin = catalog.items.find(item => item.id === pluginId);
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">COMMUNITY DISCUSSIONS</p><h2>${selectedPlugin ? `${escapeHtml(selectedPlugin.name)} 讨论` : '讨论区'}</h2><p>围绕已审核插件交流使用方法、问题与兼容性，不以讨论替代安全审计。</p></div><span class="dsh-result-meta">${result.total} 个主题</span></header>
+      ${state.user ? `<section class="dsh-panel"><h2>发起讨论</h2><form class="dsh-form-grid" id="discussionForm"><label class="dsh-field">标题<input name="title" minlength="4" maxlength="120" required></label><label class="dsh-field">关联插件<select name="pluginId"><option value="">全站讨论</option>${catalog.items.map(plugin => `<option value="${attribute(plugin.id)}" ${plugin.id === pluginId ? 'selected' : ''}>${escapeHtml(plugin.name)}</option>`).join('')}</select></label><label class="dsh-field wide">正文<textarea name="body" minlength="10" maxlength="5000" required></textarea></label><button class="dsh-button primary" type="submit">发布主题</button></form><p class="dsh-message" id="discussionMessage"></p></section>` : '<div class="dsh-verification-note"><button class="dsh-button" id="loginForDiscussion" type="button">登录后发起讨论</button></div>'}
+      <div class="dsh-thread-list">${result.items.length ? result.items.map(thread => `<article class="dsh-thread-card" data-thread-id="${attribute(thread.id)}" tabindex="0"><div><p class="dsh-kicker">${thread.pluginName ? escapeHtml(thread.pluginName) : '全站讨论'} · ${thread.status === 'locked' ? '已锁定' : '开放'}</p><h3>${escapeHtml(thread.title)}</h3><p>${escapeHtml(thread.body.slice(0, 220))}</p></div><footer><span>${escapeHtml(thread.authorName)} · ${formatTime(thread.updatedAt)}</span><strong>${thread.replyCount} 回复</strong></footer></article>`).join('') : '<div class="dsh-empty">暂时没有讨论主题。</div>'}</div>${communityPager(result, 'discussions')}</div>`;
+    document.getElementById('loginForDiscussion')?.addEventListener('click', () => goLogin());
+    document.getElementById('discussionForm')?.addEventListener('submit', async event => { event.preventDefault(); const data = new FormData(event.currentTarget); const message = document.getElementById('discussionMessage'); try { const created = await api('/discussions', { method: 'POST', body: JSON.stringify({ title: String(data.get('title')).trim(), body: String(data.get('body')).trim(), pluginId: String(data.get('pluginId') || '') || undefined }) }); renderDiscussionDetail(created.thread.id, true); } catch (error) { message.textContent = error.message; } });
+    main.querySelectorAll('[data-thread-id]').forEach(card => { card.addEventListener('click', () => renderDiscussionDetail(card.dataset.threadId, true)); card.addEventListener('keydown', event => { if (event.key === 'Enter') renderDiscussionDetail(card.dataset.threadId, true); }); });
+    main.querySelectorAll('[data-community-page]').forEach(button => button.addEventListener('click', () => { state.communityPage = Number(button.dataset.communityPage); renderDiscussions(false, pluginId); }));
+    document.title = '讨论区 · DSH Creative Workshop';
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
+}
+
+async function renderDiscussionDetail(id, push = false) {
+  if (push) history.pushState({}, '', `/discussion/?id=${encodeURIComponent(id)}`);
+  activateHub('discussions');
+  main.innerHTML = '<div class="dsh-loading">正在读取讨论内容…</div>';
+  try {
+    const [{ thread }, replies] = await Promise.all([api(`/discussions/${encodeURIComponent(id)}`), api(`/discussions/${encodeURIComponent(id)}/replies?pageSize=100`)]);
+    main.innerHTML = `<div class="dsh-community-page"><nav class="dsh-breadcrumbs"><button id="backToDiscussions" type="button">讨论区</button><span>›</span><span>${escapeHtml(thread.title)}</span></nav><article class="dsh-thread-detail"><p class="dsh-kicker">${thread.pluginName ? escapeHtml(thread.pluginName) : '全站讨论'} · ${thread.status === 'locked' ? '已锁定' : '开放'}</p><h1>${escapeHtml(thread.title)}</h1><div class="dsh-thread-meta">${escapeHtml(thread.authorName)} · ${formatTime(thread.createdAt)}</div><p>${escapeHtml(thread.body)}</p><div class="dsh-list-actions">${thread.pluginId ? `<button class="dsh-button" id="openThreadPlugin" type="button">查看关联插件</button>` : ''}${state.user?.id === thread.authorId ? '<button class="dsh-button danger" id="deleteThread" type="button">删除主题</button>' : ''}${state.user && state.user.id !== thread.authorId ? '<button class="dsh-button" id="reportThread" type="button">举报</button>' : ''}</div></article>
+      <section class="dsh-panel"><h2>${replies.total} 条回复</h2><div class="dsh-review-list">${replies.items.length ? replies.items.map(reply => `<article class="dsh-review"><div class="dsh-review-head"><strong>${escapeHtml(reply.authorName)}</strong><span>${formatTime(reply.createdAt)}</span></div><div class="dsh-review-body">${reply.status === 'deleted' ? '<em>该回复已由作者删除。</em>' : escapeHtml(reply.body)}</div>${reply.status !== 'deleted' ? `<div class="dsh-list-actions" style="margin-top:8px">${state.user?.id === reply.authorId ? `<button class="dsh-button danger" data-delete-reply="${attribute(reply.id)}" type="button">删除</button>` : state.user ? `<button class="dsh-button" data-report-reply="${attribute(reply.id)}" type="button">举报</button>` : ''}</div>` : ''}</article>`).join('') : '<div class="dsh-empty">尚无回复。</div>'}</div></section>
+      ${thread.status === 'locked' ? '<div class="dsh-verification-note">该讨论已由管理员锁定，不能继续回复。</div>' : state.user ? `<section class="dsh-panel"><h2>回复讨论</h2><form class="dsh-form-grid" id="replyForm"><label class="dsh-field wide">回复内容<textarea name="body" minlength="2" maxlength="3000" required></textarea></label><button class="dsh-button primary" type="submit">发布回复</button></form><p class="dsh-message" id="replyMessage"></p></section>` : '<div class="dsh-verification-note"><button class="dsh-button" id="loginForReply" type="button">登录后回复</button></div>'}</div>`;
+    document.getElementById('backToDiscussions')?.addEventListener('click', () => renderDiscussions(true, thread.pluginId || null));
+    document.getElementById('openThreadPlugin')?.addEventListener('click', () => navigatePlugin(thread.pluginId));
+    document.getElementById('loginForReply')?.addEventListener('click', () => goLogin());
+    document.getElementById('reportThread')?.addEventListener('click', () => reportContent('thread', thread.id));
+    document.getElementById('deleteThread')?.addEventListener('click', async () => { if (!confirm('确认删除该讨论？')) return; await api(`/discussions/${encodeURIComponent(thread.id)}`, { method: 'DELETE' }); renderDiscussions(true, thread.pluginId || null); });
+    document.getElementById('replyForm')?.addEventListener('submit', async event => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api(`/discussions/${encodeURIComponent(thread.id)}/replies`, { method: 'POST', body: JSON.stringify({ body: String(data.get('body')).trim() }) }); renderDiscussionDetail(thread.id, false); } catch (error) { document.getElementById('replyMessage').textContent = error.message; } });
+    main.querySelectorAll('[data-delete-reply]').forEach(button => button.addEventListener('click', async () => { if (!confirm('确认删除该回复？')) return; await api(`/discussion-replies/${encodeURIComponent(button.dataset.deleteReply)}`, { method: 'DELETE' }); renderDiscussionDetail(thread.id, false); }));
+    main.querySelectorAll('[data-report-reply]').forEach(button => button.addEventListener('click', () => reportContent('reply', button.dataset.reportReply)));
+    document.title = `${thread.title} · 讨论区`;
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}<br><button class="dsh-button" id="discussionFallback">返回讨论区</button></div>`; document.getElementById('discussionFallback')?.addEventListener('click', () => renderDiscussions(true)); }
+}
+
+async function renderPublicCollections(push = false) {
+  if (push) { state.communityPage = 1; history.pushState({}, '', '/collections/'); }
+  activateHub('workshop');
+  main.innerHTML = '<div class="dsh-loading">正在读取公开合集…</div>';
+  try {
+    const result = await api(`/collections?page=${state.communityPage}&pageSize=20`);
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">PUBLIC COLLECTIONS</p><h2>合集广场</h2><p>由社区用户公开维护的插件组合。复制后会成为你自己的私有合集。</p></div><span class="dsh-result-meta">${result.total} 个公开合集</span></header><div class="dsh-collection-grid">${result.items.length ? result.items.map(collection => `<article class="dsh-collection-card" data-public-collection="${attribute(collection.id)}" tabindex="0"><p class="dsh-kicker">${escapeHtml(collection.ownerName || '社区用户')}</p><h3>${escapeHtml(collection.name)}</h3><p>${escapeHtml(collection.description || '未填写说明')}</p><footer><span>${collection.plugins.length} 个插件</span><span>${formatTime(collection.updatedAt)}</span></footer></article>`).join('') : '<div class="dsh-empty">暂时没有公开合集。</div>'}</div>${communityPager(result, 'collections')}</div>`;
+    main.querySelectorAll('[data-public-collection]').forEach(card => { card.addEventListener('click', () => renderPublicCollectionDetail(card.dataset.publicCollection, true)); card.addEventListener('keydown', event => { if (event.key === 'Enter') renderPublicCollectionDetail(card.dataset.publicCollection, true); }); });
+    main.querySelectorAll('[data-community-page]').forEach(button => button.addEventListener('click', () => { state.communityPage = Number(button.dataset.communityPage); renderPublicCollections(false); }));
+    document.title = '合集广场 · DSH Creative Workshop';
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
+}
+
+async function renderPublicCollectionDetail(id, push = false) {
+  if (push) history.pushState({}, '', `/collection/?id=${encodeURIComponent(id)}`);
+  main.innerHTML = '<div class="dsh-loading">正在读取合集…</div>';
+  try {
+    const { collection } = await api(`/collections/${encodeURIComponent(id)}`);
+    main.innerHTML = `<div class="dsh-community-page"><nav class="dsh-breadcrumbs"><button id="backToCollections" type="button">合集广场</button><span>›</span><span>${escapeHtml(collection.name)}</span></nav><section class="dsh-detail-hero dsh-collection-hero"><div class="dsh-detail-summary"><p class="dsh-kicker">由 ${escapeHtml(collection.ownerName || '社区用户')} 发布</p><h1>${escapeHtml(collection.name)}</h1><p class="dsh-detail-description">${escapeHtml(collection.description || '未填写说明')}</p><div class="dsh-detail-actions"><button class="dsh-button primary" id="cloneCollection" type="button">复制到我的合集</button><button class="dsh-button" id="shareCollection" type="button">复制站内链接</button>${state.user && state.user.id !== collection.ownerId ? '<button class="dsh-button" id="reportCollection" type="button">举报</button>' : ''}</div></div></section><div class="dsh-card-grid">${collection.plugins.length ? collection.plugins.map(cardHtml).join('') : '<div class="dsh-empty">该合集暂时没有公开插件。</div>'}</div></div>`;
+    document.getElementById('backToCollections')?.addEventListener('click', () => renderPublicCollections(true));
+    document.getElementById('cloneCollection')?.addEventListener('click', async () => { if (!state.user) return goLogin(); try { await api(`/collections/${encodeURIComponent(id)}/clone`, { method: 'POST' }); toast('已复制为你的私有合集。'); } catch (error) { showError(error); } });
+    document.getElementById('shareCollection')?.addEventListener('click', async () => { try { await navigator.clipboard.writeText(location.href); toast('合集链接已复制。'); } catch { toast('请从地址栏复制链接。'); } });
+    document.getElementById('reportCollection')?.addEventListener('click', () => reportContent('collection', id));
+    main.querySelectorAll('.dsh-card').forEach(card => card.addEventListener('click', event => handleCardClick(event, card)));
+    document.title = `${collection.name} · 合集广场`;
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
+}
+
+async function renderGlobalReviews(push = false) {
+  if (push) { state.communityPage = 1; history.pushState({}, '', '/?view=reviews'); }
+  activateHub('reviews'); main.innerHTML = '<div class="dsh-loading">正在读取社区评价…</div>';
+  try {
+    const result = await api(`/reviews?page=${state.communityPage}&pageSize=25`);
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">REVISION-BOUND REVIEWS</p><h2>最新社区评价</h2><p>每条评价都绑定当前公开 Revision；版本变化后不会沿用旧评分。</p></div><span class="dsh-result-meta">${result.total} 条评价</span></header><div class="dsh-review-list">${result.items.length ? result.items.map(review => `<article class="dsh-review"><div class="dsh-review-head"><strong>${escapeHtml(review.pluginName)} · ${'★'.repeat(review.rating)}</strong><span>${formatTime(review.updatedAt)}</span></div><div class="dsh-review-body">${escapeHtml(review.body)}</div><footer class="dsh-list-actions"><button class="dsh-button" data-review-plugin="${attribute(review.pluginId)}" type="button">查看插件</button>${state.user && state.user.id !== review.authorId ? `<button class="dsh-button" data-report-review="${attribute(review.id)}" type="button">举报</button>` : ''}</footer></article>`).join('') : '<div class="dsh-empty">暂时没有公开评价。</div>'}</div>${communityPager(result, 'reviews')}</div>`;
+    main.querySelectorAll('[data-review-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.reviewPlugin)));
+    main.querySelectorAll('[data-report-review]').forEach(button => button.addEventListener('click', () => reportContent('review', button.dataset.reportReview)));
+    main.querySelectorAll('[data-community-page]').forEach(button => button.addEventListener('click', () => { state.communityPage = Number(button.dataset.communityPage); renderGlobalReviews(false); }));
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
+}
+
+function activityText(item) {
+  if (item.type === 'plugin.published') return `插件 ${item.payload.name || item.pluginId || ''} 发布了新的公开 Revision`;
+  if (item.type === 'collection.published') return `社区用户公开了合集 ${item.payload.name || ''}`;
+  if (item.type === 'discussion.created') return `新讨论：${item.payload.title || ''}`;
+  return item.type;
+}
+
+async function renderActivity(push = false) {
+  if (push) { state.communityPage = 1; history.pushState({}, '', '/?view=activity'); }
+  activateHub('news'); main.innerHTML = '<div class="dsh-loading">正在读取更新动态…</div>';
+  try {
+    const result = await api(`/activity?page=${state.communityPage}&pageSize=25`);
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">WORKSHOP ACTIVITY</p><h2>更新动态</h2><p>由插件公开、合集发布和社区讨论产生的真实事件。</p></div><span class="dsh-result-meta">${result.total} 条动态</span></header><div class="dsh-activity-list">${result.items.length ? result.items.map(item => `<article class="dsh-activity-item"><time>${formatTime(item.createdAt)}</time><strong>${escapeHtml(activityText(item))}</strong><div class="dsh-list-actions">${item.pluginId ? `<button class="dsh-button" data-activity-plugin="${attribute(item.pluginId)}" type="button">插件详情</button>` : ''}${item.collectionId ? `<button class="dsh-button" data-activity-collection="${attribute(item.collectionId)}" type="button">合集详情</button>` : ''}${item.threadId ? `<button class="dsh-button" data-activity-thread="${attribute(item.threadId)}" type="button">讨论详情</button>` : ''}</div></article>`).join('') : '<div class="dsh-empty">暂时没有动态。</div>'}</div>${communityPager(result, 'activity')}</div>`;
+    main.querySelectorAll('[data-activity-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.activityPlugin)));
+    main.querySelectorAll('[data-activity-collection]').forEach(button => button.addEventListener('click', () => renderPublicCollectionDetail(button.dataset.activityCollection, true)));
+    main.querySelectorAll('[data-activity-thread]').forEach(button => button.addEventListener('click', () => renderDiscussionDetail(button.dataset.activityThread, true)));
+    main.querySelectorAll('[data-community-page]').forEach(button => button.addEventListener('click', () => { state.communityPage = Number(button.dataset.communityPage); renderActivity(false); }));
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
 }
 
 function renderAbout(push = true) {
@@ -584,6 +764,9 @@ async function loadSessionAndVersion() {
     ]);
     state.version = health.version || state.version;
     state.user = auth.user;
+    if (state.user) {
+      try { state.unreadNotifications = (await api('/me/notifications?pageSize=1')).unread || 0; } catch { state.unreadNotifications = 0; }
+    }
     setApiStatus(true);
   } catch {
     setApiStatus(false);
@@ -596,8 +779,16 @@ function route() {
     const id = new URLSearchParams(location.search).get('id');
     return id ? renderPlugin(id) : navigateCatalog(false);
   }
-  if (new URLSearchParams(location.search).get('view') === 'about') return renderAbout(false);
+  if (location.pathname.startsWith('/discussion/')) { const id = new URLSearchParams(location.search).get('id'); return id ? renderDiscussionDetail(id, false) : renderDiscussions(false); }
+  if (location.pathname.startsWith('/collection/')) { const id = new URLSearchParams(location.search).get('id'); return id ? renderPublicCollectionDetail(id, false) : renderPublicCollections(false); }
+  if (location.pathname.startsWith('/collections/')) return renderPublicCollections(false);
+  const view = new URLSearchParams(location.search).get('view');
+  if (view === 'about') return renderAbout(false);
+  if (view === 'discussions') return renderDiscussions(false, new URLSearchParams(location.search).get('pluginId'));
+  if (view === 'reviews') return renderGlobalReviews(false);
+  if (view === 'activity') return renderActivity(false);
   state.filters = filtersFromUrl();
+  activateHub('workshop');
   return loadCatalog();
 }
 
@@ -605,6 +796,7 @@ async function init() {
   installAccountUi();
   wireHeader();
   await loadSessionAndVersion();
+  startPresence();
   await route();
   window.addEventListener('popstate', route);
 }

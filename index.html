@@ -1140,7 +1140,7 @@
       to { transform: translateY(0); opacity: 1; }
     }
   </style>
-  <link rel="stylesheet" href="/assets/workshop-v1.css?v=1.1.0">
+  <link rel="stylesheet" href="/assets/workshop-v1.css?v=1.1.1">
 </head>
 <body>
 
@@ -1177,7 +1177,7 @@
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
         <span>创意工坊</span>
       </span>
-      <span class="steam-hub-nav-item js-hub-tab" data-tab="news">新闻</span>
+      <span class="steam-hub-nav-item js-hub-tab" data-tab="news">动态</span>
       <span class="steam-hub-nav-item js-hub-tab" data-tab="guides">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>
         <span>指南</span>
@@ -1233,6 +1233,7 @@
 
           <!-- 您的项目下拉菜单 -->
           <div class="steam-dropdown-menu" id="myItemsMenu" style="left: 140px;">
+            <div class="steam-dropdown-item js-open-notifications">通知中心 (<span id="menuNoticeCount">0</span>)</div>
             <div class="steam-dropdown-item js-open-subscribed-menu">已订阅物品管理 (<span id="menuSubCount">3</span>)</div>
             <div class="steam-dropdown-item js-open-profile-switch">账号与设备会话</div>
             <div class="steam-dropdown-item js-open-create-col">创建新合集</div>
@@ -1264,6 +1265,6 @@
   <!-- 用户中心、合集与会话对话框由 /js/workshop-app.js 使用真实 API 动态创建。 -->
   <!-- 10. 交互驱动脚本 -->
   <!-- 旧版静态样例已移至 archive/legacy_prototype；生产页面仅由真实 API 渲染。 -->
-  <script type="module" src="/js/workshop-app.js?v=1.1.0"></script>
+  <script type="module" src="/js/workshop-app.js?v=1.1.1"></script>
 </body>
 </html>
