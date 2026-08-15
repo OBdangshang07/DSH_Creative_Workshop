@@ -83,6 +83,39 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
     expect(result.reason).toBe('DSH_DEPENDENCY_EVIDENCE_WEAK')
   })
 
+  it('collects package-local previews pinned to the verified commit', async () => {
+    const plugin = await verifyGitHubRepository(repository, undefined, fixtureFetch({
+      'packages/alpha/package.json': JSON.stringify({ name: '@community/alpha', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'packages/alpha/patch.yml': '- insert:\n    - id: alpha\n      name: "@community/alpha"\n',
+      'packages/alpha/preview/cover.webp': 'image bytes are not fetched while verifying',
+      'packages/alpha/screenshots/demo.png': 'image bytes are not fetched while verifying',
+      'packages/beta/cover.png': 'belongs to another package',
+    }))
+    expect(plugin?.previewUrls).toEqual([
+      'https://raw.githubusercontent.com/community/example-plugin/abc123fixedcommit/packages/alpha/preview/cover.webp',
+      'https://raw.githubusercontent.com/community/example-plugin/abc123fixedcommit/packages/alpha/screenshots/demo.png',
+    ])
+  })
+
+  it('excludes private and template packages and deduplicates package names', async () => {
+    const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
+      'packages/real/package.json': JSON.stringify({ name: '@community/shared', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'packages/real/patch.yml': '- insert:\n    - id: real\n      name: "@community/shared"\n',
+      'packages/real/generated/copy/package.json': JSON.stringify({ name: '@community/shared', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'packages/real/generated/copy/patch.yml': '- insert:\n    - id: duplicate\n      name: "@community/shared"\n',
+      'packages/private/package.json': JSON.stringify({ name: '@community/private', private: true, dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'packages/private/patch.yml': '- insert:\n    - id: private\n      name: "@community/private"\n',
+      'templates/starter/package.json': JSON.stringify({ name: '@community/template', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'templates/starter/patch.yml': '- insert:\n    - id: template\n      name: "@community/template"\n',
+    }))
+    expect(result.plugins).toHaveLength(1)
+    expect(result.plugins[0]?.verification.packageJsonPath).toBe('packages/real/package.json')
+    expect(result.evidence.failures).toEqual(expect.arrayContaining([
+      expect.objectContaining({ packageJsonPath: 'packages/private/package.json', reason: 'PRIVATE_PACKAGE_EXCLUDED' }),
+      expect.objectContaining({ packageJsonPath: 'packages/real/generated/copy/package.json', reason: 'DUPLICATE_PACKAGE_NAME' }),
+    ]))
+  })
+
   it('does not accept unrelated dependency names that merely contain dsh letters', async () => {
     const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
       'package.json': JSON.stringify({ name: '@community/topic-spam', dependencies: { redshift: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),

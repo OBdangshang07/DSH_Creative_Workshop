@@ -1,0 +1,13 @@
+{
+  "version": "1.1.4",
+  "title": "媒体可靠性与目录质量",
+  "summary": "插件封面现在由工坊同源输出并具备确定性降级，同时增加项目媒体、相关推荐、GitHub 项目补录与管理端媒体治理。",
+  "publishedAt": "2026-08-15T14:10:00.000Z",
+  "changes": [
+    { "type": "fixed", "text": "远端封面失效、限流或返回错误类型时，卡片仍显示可识别的工坊封面。" },
+    { "type": "added", "text": "新增固定 Commit 项目图采集、媒体广场、详情图集和相关插件。" },
+    { "type": "added", "text": "新增用户 GitHub 项目补录、媒体问题反馈和管理端审核、重试与处理流程。" },
+    { "type": "changed", "text": "抓取器排除 private 包、scripts/templates 路径，并对同仓库重复 packageName 进行确定性去重。" },
+    { "type": "security", "text": "远端媒体仅允许 GitHub 可验证来源，并限制图片类型、响应大小、超时与重定向。" }
+  ]
+}

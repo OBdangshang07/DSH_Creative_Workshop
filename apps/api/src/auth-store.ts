@@ -17,6 +17,9 @@ export type DiscussionStatus = 'open' | 'locked' | 'hidden' | 'deleted'
 export type ReplyStatus = 'visible' | 'hidden' | 'deleted'
 export type ReportStatus = 'pending' | 'resolved' | 'dismissed'
 export type RevisionChangeSource = 'declared' | 'github_release' | 'changelog' | 'commit' | 'missing' | 'manual'
+export type PluginMediaStatus = 'pending' | 'ready' | 'fallback' | 'failed'
+export type PluginMediaSource = 'package_preview' | 'github_social'
+export type SubmissionStatus = 'pending' | 'accepted' | 'rejected'
 
 export interface RevisionChangeItem {
   type: 'added' | 'changed' | 'fixed' | 'removed' | 'security' | 'other'
@@ -171,9 +174,36 @@ export interface GitHubPluginRecord {
   dshDependencies?: string[]
   version?: string
   releaseNotes?: CollectedReleaseNotes
+  previewUrls?: string[]
   source: 'github-topic'
   securityReviewed: false
   verification: PluginVerification
+}
+
+export interface PluginMediaView {
+  index: number
+  role: 'cover' | 'gallery'
+  sourceType: PluginMediaSource
+  status: PluginMediaStatus
+  url: string
+  sourceUrl: string
+  mime?: string
+  bytes?: number
+  error?: string
+  checkedAt?: string
+}
+
+export interface PluginSubmission {
+  id: string
+  userId: string
+  username: string
+  repositoryUrl: string
+  repositoryFullName: string
+  status: SubmissionStatus
+  note?: string
+  createdAt: string
+  updatedAt: string
+  resolvedBy?: string
 }
 
 export interface PluginVerification {
@@ -609,6 +639,41 @@ export class AccountStore {
         deferred=COALESCE((SELECT COUNT(*) FROM sync_candidates WHERE run_id=sync_runs.id AND status='deferred'),0)
       WHERE NOT EXISTS(SELECT 1 FROM schema_migrations WHERE version=5);
       INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(5, datetime('now'));
+    `)
+    this.database.exec(`
+      CREATE TABLE IF NOT EXISTS plugin_media(
+        revision_id TEXT NOT NULL REFERENCES plugin_revisions(id) ON DELETE CASCADE,
+        media_index INTEGER NOT NULL, role TEXT NOT NULL CHECK(role IN ('cover','gallery')),
+        source_type TEXT NOT NULL CHECK(source_type IN ('package_preview','github_social')),
+        source_url TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','ready','fallback','failed')),
+        cache_key TEXT, mime TEXT, bytes INTEGER, error TEXT, checked_at TEXT, updated_at TEXT NOT NULL,
+        PRIMARY KEY(revision_id,media_index)
+      );
+      CREATE INDEX IF NOT EXISTS plugin_media_status_idx ON plugin_media(status,updated_at DESC);
+      CREATE TABLE IF NOT EXISTS plugin_submissions(
+        id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        repository_url TEXT NOT NULL, repository_full_name TEXT NOT NULL COLLATE NOCASE,
+        status TEXT NOT NULL CHECK(status IN ('pending','accepted','rejected')),
+        note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, resolved_by TEXT,
+        UNIQUE(user_id,repository_full_name)
+      );
+      CREATE INDEX IF NOT EXISTS plugin_submissions_status_idx ON plugin_submissions(status,updated_at DESC);
+      CREATE TABLE IF NOT EXISTS media_reports(
+        id TEXT PRIMARY KEY, reporter_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+        reason TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','resolved','dismissed')),
+        created_at TEXT NOT NULL, resolved_at TEXT, resolved_by TEXT, resolution TEXT,
+        UNIQUE(reporter_id,plugin_id)
+      );
+      CREATE INDEX IF NOT EXISTS media_reports_status_idx ON media_reports(status,created_at DESC);
+      INSERT OR IGNORE INTO plugin_media(
+        revision_id,media_index,role,source_type,source_url,status,updated_at
+      ) SELECT r.id,0,'cover',
+        CASE WHEN json_array_length(COALESCE(json_extract(r.record_json,'$.previewUrls'),'[]'))>0 THEN 'package_preview' ELSE 'github_social' END,
+        COALESCE(json_extract(r.record_json,'$.previewUrls[0]'),'https://opengraph.githubassets.com/dsh-workshop-v114/' || p.full_name),
+        'pending',r.verified_at
+        FROM plugin_revisions r JOIN plugins p ON p.id=r.plugin_id;
+      INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES(6, datetime('now'));
     `)
   }
 
@@ -1400,6 +1465,32 @@ export class AccountStore {
     return { ...plugin, community: this.communityFor(plugin.id, plugin.revisionId) }
   }
 
+  private mediaFor(pluginId: string, revisionId: string): PluginMediaView[] {
+    const rows = this.database.prepare('SELECT * FROM plugin_media WHERE revision_id=? ORDER BY media_index').all(revisionId) as SqlRow[]
+    return rows.map(row => ({
+      index: Number(row.media_index), role: String(row.role) as PluginMediaView['role'],
+      sourceType: String(row.source_type) as PluginMediaSource, status: String(row.status) as PluginMediaStatus,
+      url: `/api/v1/plugins/${encodeURIComponent(pluginId)}/media/${Number(row.media_index)}`,
+      sourceUrl: String(row.source_url),
+      ...(row.mime === null ? {} : { mime: String(row.mime) }), ...(row.bytes === null ? {} : { bytes: Number(row.bytes) }),
+      ...(row.error === null ? {} : { error: String(row.error) }), ...(row.checked_at === null ? {} : { checkedAt: String(row.checked_at) }),
+    }))
+  }
+
+  private withMedia<T extends GitHubPluginRecord & { revisionId: string }>(plugin: T, gallery = false) {
+    const media = this.mediaFor(plugin.id, plugin.revisionId)
+    const primary = media[0]
+    return {
+      ...plugin,
+      cover: {
+        url: `/api/v1/plugins/${encodeURIComponent(plugin.id)}/cover.svg?revision=${encodeURIComponent(plugin.revisionId)}`,
+        sourceType: primary?.sourceType ?? 'github_social', status: primary?.status ?? 'fallback',
+      },
+      mediaCount: media.length,
+      ...(gallery ? { media } : {}),
+    }
+  }
+
   private publicFacets() {
     const base = `FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
       JOIN moderation_decisions m ON m.revision_id=r.id WHERE m.status='approved'`
@@ -1449,7 +1540,7 @@ export class AccountStore {
     const rows = this.database.prepare(`SELECT p.published_revision_id,r.id AS revision_id,r.record_json,m.status AS moderation_status,m.featured,m.reason,m.updated_at AS moderation_updated_at,m.updated_by ${from} ORDER BY m.featured DESC,${order} LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
     const items = rows.map(row => {
       const plugin = this.pluginFromRevision(row)
-      return admin ? { ...plugin, release: this.revisionChange(plugin.revisionId) } : this.withCommunity(plugin)
+      return admin ? { ...this.withMedia(plugin), release: this.revisionChange(plugin.revisionId) } : this.withMedia(this.withCommunity(plugin))
     })
     return { syncedAt: this.latestCompletedSyncAt(), items, page, pageSize, total, ...(admin ? {} : { facets: this.publicFacets() }) }
   }
@@ -1457,9 +1548,146 @@ export class AccountStore {
   publicPlugin(pluginId: string) {
     const plugin = this.publicPluginBase(pluginId)
     return plugin === undefined ? undefined : {
-      ...this.withCommunity(plugin), dependencies: this.dependencyViews(plugin),
+      ...this.withMedia(this.withCommunity(plugin), true), dependencies: this.dependencyViews(plugin),
       release: this.revisionChange(plugin.revisionId),
     }
+  }
+
+  publicMediaSource(pluginId: string, mediaIndex: number): (SqlRow & { record: GitHubPluginRecord }) | undefined {
+    const row = this.database.prepare(`SELECT p.id AS plugin_id,p.full_name,r.id AS revision_id,r.record_json,
+      pm.media_index,pm.role,pm.source_type,pm.source_url,pm.status,pm.cache_key,pm.mime,pm.bytes,pm.error,pm.checked_at
+      FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id
+      JOIN moderation_decisions m ON m.revision_id=r.id AND m.status='approved'
+      JOIN plugin_media pm ON pm.revision_id=r.id
+      WHERE p.id=? AND pm.media_index=?`).get(pluginId, mediaIndex) as SqlRow | undefined
+    if (row === undefined) return undefined
+    return { ...row, record: JSON.parse(String(row.record_json)) as GitHubPluginRecord }
+  }
+
+  updateMediaState(revisionId: string, mediaIndex: number, update: {
+    status: PluginMediaStatus; cacheKey?: string; mime?: string; bytes?: number; error?: string
+  }): void {
+    const at = nowIso()
+    this.database.prepare(`UPDATE plugin_media SET status=?,cache_key=?,mime=?,bytes=?,error=?,checked_at=?,updated_at=?
+      WHERE revision_id=? AND media_index=?`).run(
+      update.status, update.cacheKey ?? null, update.mime ?? null, update.bytes ?? null, update.error ?? null,
+      at, at, revisionId, mediaIndex,
+    )
+  }
+
+  resetPluginMedia(actorId: string, pluginId: string, context: { ip?: string; requestId?: string } = {}): string[] | undefined {
+    const row = this.database.prepare('SELECT published_revision_id FROM plugins WHERE id=?').get(pluginId) as SqlRow | undefined
+    if (row?.published_revision_id === null || row?.published_revision_id === undefined) return undefined
+    const revisionId = String(row.published_revision_id)
+    const cacheKeys = (this.database.prepare('SELECT cache_key FROM plugin_media WHERE revision_id=? AND cache_key IS NOT NULL').all(revisionId) as SqlRow[]).map(item => String(item.cache_key))
+    this.database.prepare("UPDATE plugin_media SET status='pending',cache_key=NULL,mime=NULL,bytes=NULL,error=NULL,checked_at=NULL,updated_at=? WHERE revision_id=?").run(nowIso(), revisionId)
+    this.audit(actorId, 'plugin.media.reset', pluginId, { revisionId, cacheKeys }, context)
+    return cacheKeys
+  }
+
+  adminMedia(query: { status?: string; q?: string; page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1); const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const clauses = ['p.published_revision_id IS NOT NULL']; const params: Array<string | number> = []
+    if (query.status) { clauses.push('pm.status=?'); params.push(query.status) }
+    if (query.q) { clauses.push("(p.full_name LIKE ? OR json_extract(r.record_json,'$.name') LIKE ?)"); params.push(`%${query.q}%`,`%${query.q}%`) }
+    const from = `FROM plugins p JOIN plugin_revisions r ON r.id=p.published_revision_id JOIN plugin_media pm ON pm.revision_id=r.id AND pm.media_index=0 WHERE ${clauses.join(' AND ')}`
+    const total = this.scalar(`SELECT COUNT(*) AS value ${from}`, ...params)
+    const rows = this.database.prepare(`SELECT p.id AS plugin_id,p.full_name,r.id AS revision_id,json_extract(r.record_json,'$.name') AS name,pm.* ${from} ORDER BY pm.updated_at DESC LIMIT ? OFFSET ?`).all(...params,pageSize,(page-1)*pageSize) as SqlRow[]
+    const summaryRows = this.database.prepare(`SELECT pm.status,COUNT(*) AS count FROM plugins p JOIN plugin_media pm ON pm.revision_id=p.published_revision_id AND pm.media_index=0 WHERE p.published_revision_id IS NOT NULL GROUP BY pm.status`).all() as SqlRow[]
+    return { items: rows.map(row => ({
+      pluginId:String(row.plugin_id),fullName:String(row.full_name),name:String(row.name),revisionId:String(row.revision_id),
+      status:String(row.status),sourceType:String(row.source_type),sourceUrl:String(row.source_url),
+      ...(row.mime===null?{}:{mime:String(row.mime)}),...(row.bytes===null?{}:{bytes:Number(row.bytes)}),
+      ...(row.error===null?{}:{error:String(row.error)}),...(row.checked_at===null?{}:{checkedAt:String(row.checked_at)}),
+    })), page,pageSize,total, summary:Object.fromEntries(summaryRows.map(row=>[String(row.status),Number(row.count)])) }
+  }
+
+  relatedPlugins(pluginId: string, limit = 8) {
+    const current = this.publicPluginBase(pluginId)
+    if (current === undefined) return undefined
+    const candidates = this.githubSnapshot(false, { pageSize: 100 }).items.filter(item => item.id !== pluginId)
+    const topics = new Set(current.topics); const surfaces = new Set(current.surfaces)
+    return candidates.map(item => {
+      const reasons: string[] = []; let score = 0
+      if (item.fullName === current.fullName) { score += 8; reasons.push('同一 GitHub 仓库') }
+      if (item.kind === current.kind) { score += 2; reasons.push(`同为 ${item.kind}`) }
+      const sharedSurfaces = item.surfaces.filter(value => surfaces.has(value)); if (sharedSurfaces.length) { score += sharedSurfaces.length * 2; reasons.push(`共同表面：${sharedSurfaces.join(' / ')}`) }
+      const sharedTopics = item.topics.filter(value => topics.has(value)).slice(0,3); if (sharedTopics.length) { score += sharedTopics.length; reasons.push(`共同标签：${sharedTopics.join(' / ')}`) }
+      return { plugin:item,score,reasons }
+    }).filter(item => item.score > 0).sort((a,b)=>b.score-a.score||b.plugin.stars-a.plugin.stars).slice(0,Math.min(12,Math.max(1,limit)))
+  }
+
+  createPluginSubmission(userId: string, repositoryUrl: string, repositoryFullName: string): PluginSubmission {
+    const at = nowIso(); const id = `submission_${randomUUID()}`
+    this.database.prepare(`INSERT INTO plugin_submissions(id,user_id,repository_url,repository_full_name,status,note,created_at,updated_at,resolved_by)
+      VALUES(?,?,?,?, 'pending',NULL,?,?,NULL) ON CONFLICT(user_id,repository_full_name) DO UPDATE SET
+      repository_url=excluded.repository_url,status=CASE WHEN plugin_submissions.status='rejected' THEN 'pending' ELSE plugin_submissions.status END,
+      note=CASE WHEN plugin_submissions.status='rejected' THEN NULL ELSE plugin_submissions.note END,updated_at=excluded.updated_at,
+      resolved_by=CASE WHEN plugin_submissions.status='rejected' THEN NULL ELSE plugin_submissions.resolved_by END`).run(
+      id,userId,repositoryUrl,repositoryFullName,at,at,
+    )
+    const row = this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id WHERE s.user_id=? AND s.repository_full_name=?`).get(userId,repositoryFullName) as SqlRow
+    return this.submissionFromRow(row)
+  }
+
+  userPluginSubmissions(userId: string): PluginSubmission[] {
+    return (this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id WHERE s.user_id=? ORDER BY s.updated_at DESC`).all(userId) as SqlRow[]).map(row=>this.submissionFromRow(row))
+  }
+
+  adminPluginSubmissions(query: { status?: string; page?: number; pageSize?: number } = {}) {
+    const page=Math.max(1,query.page??1); const pageSize=Math.min(100,Math.max(1,query.pageSize??25)); const params:string[]=[]
+    const where=query.status?'WHERE s.status=?':''; if(query.status) params.push(query.status)
+    const total=this.scalar(`SELECT COUNT(*) AS value FROM plugin_submissions s ${where}`,...params)
+    const rows=this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id ${where} ORDER BY s.updated_at DESC LIMIT ? OFFSET ?`).all(...params,pageSize,(page-1)*pageSize) as SqlRow[]
+    return {items:rows.map(row=>this.submissionFromRow(row)),page,pageSize,total}
+  }
+
+  moderatePluginSubmission(actorId:string,id:string,status:SubmissionStatus,note:string|undefined,context:{ip?:string;requestId?:string}={}) {
+    const current=this.database.prepare('SELECT status FROM plugin_submissions WHERE id=?').get(id) as SqlRow|undefined
+    if(current===undefined)return undefined
+    const at=nowIso(); this.database.prepare('UPDATE plugin_submissions SET status=?,note=?,updated_at=?,resolved_by=? WHERE id=?').run(status,note??null,at,actorId,id)
+    this.audit(actorId,'plugin.submission.moderate',id,{before:current.status,after:status,note},context)
+    const row=this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id WHERE s.id=?`).get(id) as SqlRow
+    return this.submissionFromRow(row)
+  }
+
+  private submissionFromRow(row:SqlRow):PluginSubmission {
+    return {id:String(row.id),userId:String(row.user_id),username:String(row.username),repositoryUrl:String(row.repository_url),repositoryFullName:String(row.repository_full_name),status:String(row.status) as SubmissionStatus,
+      ...(row.note===null?{}:{note:String(row.note)}),createdAt:String(row.created_at),updatedAt:String(row.updated_at),...(row.resolved_by===null?{}:{resolvedBy:String(row.resolved_by)})}
+  }
+
+  createMediaReport(userId:string,pluginId:string,reason:string):boolean {
+    if(!this.isPublicPlugin(pluginId))throw new Error('REPORT_TARGET_NOT_FOUND')
+    const at=nowIso(); this.database.prepare(`INSERT INTO media_reports(id,reporter_id,plugin_id,reason,status,created_at)
+      VALUES(?,?,?,?, 'pending',?) ON CONFLICT(reporter_id,plugin_id) DO UPDATE SET reason=excluded.reason,status='pending',created_at=excluded.created_at,resolved_at=NULL,resolved_by=NULL,resolution=NULL`).run(`media_report_${randomUUID()}`,userId,pluginId,reason,at)
+    return true
+  }
+
+  adminMediaReports(query: { status?: string; page?: number; pageSize?: number } = {}) {
+    const page = Math.max(1, query.page ?? 1); const pageSize = Math.min(100, Math.max(1, query.pageSize ?? 25))
+    const params: string[] = []; const where = query.status ? 'WHERE mr.status=?' : ''
+    if (query.status) params.push(query.status)
+    const total = this.scalar(`SELECT COUNT(*) AS value FROM media_reports mr ${where}`, ...params)
+    const rows = this.database.prepare(`SELECT mr.*,u.username,json_extract(r.record_json,'$.name') AS plugin_name
+      FROM media_reports mr JOIN users u ON u.id=mr.reporter_id JOIN plugins p ON p.id=mr.plugin_id
+      LEFT JOIN plugin_revisions r ON r.id=p.published_revision_id ${where}
+      ORDER BY mr.created_at DESC LIMIT ? OFFSET ?`).all(...params, pageSize, (page - 1) * pageSize) as SqlRow[]
+    return { items: rows.map(row => ({
+      id: String(row.id), reporterId: String(row.reporter_id), reporterName: String(row.username), pluginId: String(row.plugin_id),
+      pluginName: String(row.plugin_name ?? row.plugin_id), reason: String(row.reason), status: String(row.status), createdAt: String(row.created_at),
+      ...(row.resolved_at === null ? {} : { resolvedAt: String(row.resolved_at) }),
+      ...(row.resolved_by === null ? {} : { resolvedBy: String(row.resolved_by) }),
+      ...(row.resolution === null ? {} : { resolution: String(row.resolution) }),
+    })), page, pageSize, total }
+  }
+
+  resolveMediaReport(actorId: string, reportId: string, status: Exclude<ReportStatus, 'pending'>, resolution: string, context: { ip?: string; requestId?: string } = {}): boolean {
+    const row = this.database.prepare('SELECT status FROM media_reports WHERE id=?').get(reportId) as SqlRow | undefined
+    if (row === undefined) return false
+    const at = nowIso()
+    this.database.prepare('UPDATE media_reports SET status=?,resolved_at=?,resolved_by=?,resolution=? WHERE id=?').run(status, at, actorId, resolution, reportId)
+    this.audit(actorId, 'plugin.media.report.resolve', reportId, { before: row.status, after: status, resolution }, context)
+    return true
   }
 
   pluginRevisions(pluginId: string) {
@@ -1616,6 +1844,27 @@ export class AccountStore {
     )
   }
 
+  private upsertRevisionMedia(plugin: GitHubPluginRecord, revisionId: string): void {
+    const social = `https://opengraph.githubassets.com/dsh-workshop-v114/${plugin.fullName}`
+    const sources = plugin.previewUrls?.length ? plugin.previewUrls.slice(0, 8) : [social]
+    const at = nowIso()
+    const upsert = this.database.prepare(`INSERT INTO plugin_media(
+      revision_id,media_index,role,source_type,source_url,status,updated_at
+    ) VALUES(?,?,?,?,?,'pending',?) ON CONFLICT(revision_id,media_index) DO UPDATE SET
+      role=excluded.role,source_type=excluded.source_type,source_url=excluded.source_url,
+      status=CASE WHEN plugin_media.source_url<>excluded.source_url THEN 'pending' ELSE plugin_media.status END,
+      cache_key=CASE WHEN plugin_media.source_url<>excluded.source_url THEN NULL ELSE plugin_media.cache_key END,
+      mime=CASE WHEN plugin_media.source_url<>excluded.source_url THEN NULL ELSE plugin_media.mime END,
+      bytes=CASE WHEN plugin_media.source_url<>excluded.source_url THEN NULL ELSE plugin_media.bytes END,
+      error=CASE WHEN plugin_media.source_url<>excluded.source_url THEN NULL ELSE plugin_media.error END,
+      checked_at=CASE WHEN plugin_media.source_url<>excluded.source_url THEN NULL ELSE plugin_media.checked_at END,
+      updated_at=excluded.updated_at`)
+    sources.forEach((sourceUrl, index) => upsert.run(
+      revisionId, index, index === 0 ? 'cover' : 'gallery', plugin.previewUrls?.length ? 'package_preview' : 'github_social', sourceUrl, at,
+    ))
+    this.database.prepare('DELETE FROM plugin_media WHERE revision_id=? AND media_index>=?').run(revisionId, sources.length)
+  }
+
   private ingestOne(actorId: string, plugin: GitHubPluginRecord, legacyModeration?: Omit<PluginModeration, 'revisionId'>): void {
     const revisionId = revisionIdFor(plugin)
     const packagePath = plugin.packagePath ?? plugin.verification.packageJsonPath
@@ -1630,6 +1879,7 @@ export class AccountStore {
       JSON.stringify(plugin), JSON.stringify(plugin.verification), plugin.verification.checkedAt,
     )
     this.upsertRevisionChange(plugin, revisionId, previousRevisionId)
+    this.upsertRevisionMedia(plugin, revisionId)
     const moderation = legacyModeration ?? { status: 'pending' as const, featured: false, updatedAt: at, updatedBy: actorId }
     this.database.prepare('INSERT OR IGNORE INTO moderation_decisions VALUES(?,?,?,?,?,?)').run(
       revisionId, moderation.status, moderation.featured ? 1 : 0, 'reason' in moderation ? moderation.reason ?? null : null, moderation.updatedAt, moderation.updatedBy,
@@ -1799,6 +2049,10 @@ export class AccountStore {
       discussions: this.scalar("SELECT COUNT(*) AS value FROM discussion_threads WHERE status IN ('open','locked')"),
       publicCollections: this.scalar("SELECT COUNT(*) AS value FROM collections WHERE visibility='public' AND moderation_status='visible'"),
       pendingReports: this.scalar("SELECT COUNT(*) AS value FROM content_reports WHERE status='pending'"),
+      pendingMediaReports: this.scalar("SELECT COUNT(*) AS value FROM media_reports WHERE status='pending'"),
+      pendingSubmissions: this.scalar("SELECT COUNT(*) AS value FROM plugin_submissions WHERE status='pending'"),
+      mediaReady: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN plugin_media pm ON pm.revision_id=p.published_revision_id AND pm.media_index=0 WHERE pm.status='ready'"),
+      mediaAttention: this.scalar("SELECT COUNT(*) AS value FROM plugins p JOIN plugin_media pm ON pm.revision_id=p.published_revision_id AND pm.media_index=0 WHERE pm.status IN ('fallback','failed')"),
       releases: this.scalar('SELECT COUNT(*) AS value FROM workshop_releases'),
       githubSyncedAt: this.latestCompletedSyncAt() ?? null, latestSync: this.listSyncRuns(1).items[0] ?? null,
       audit: this.auditRecords({ pageSize: 20 }).items,

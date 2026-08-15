@@ -3,7 +3,7 @@ import { api, escapeHtml, formatTime } from '/js/account-api.js';
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.3',
+  version: '1.1.4',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },
@@ -32,8 +32,24 @@ function formatNumber(value) {
 }
 
 function coverUrl(plugin) {
-  const path = String(plugin.fullName || '').split('/').map(encodeURIComponent).join('/');
-  return `https://opengraph.githubassets.com/dsh-workshop-v1/${path}`;
+  const value = String(plugin.cover?.url || `/api/v1/plugins/${encodeURIComponent(plugin.id)}/cover.svg`);
+  return value.startsWith('/api/v1/plugins/') ? value : `/api/v1/plugins/${encodeURIComponent(plugin.id)}/cover.svg`;
+}
+
+function mediaUrl(plugin, item) {
+  const value = String(item?.url || '');
+  return value.startsWith(`/api/v1/plugins/${encodeURIComponent(plugin.id)}/media/`) ? value : '';
+}
+
+function wireMediaFallbacks(root = document) {
+  root.querySelectorAll('img[data-cover-fallback]').forEach(image => image.addEventListener('error', () => {
+    if (image.dataset.fallbackApplied === 'true') return;
+    image.dataset.fallbackApplied = 'true';
+    image.src = '/assets/scheme-b-cyber-harness.svg';
+  }, { once: true }));
+  root.querySelectorAll('img[data-hide-on-error]').forEach(image => image.addEventListener('error', () => {
+    image.closest('figure')?.setAttribute('hidden', '');
+  }, { once: true }));
 }
 
 function safeExternalUrl(value) {
@@ -155,7 +171,8 @@ function wireHeader() {
   document.querySelector('.steam-hub-nav-item[data-tab="news"]')?.addEventListener('click', () => renderActivity(true));
   document.querySelector('.steam-hub-nav-item[data-tab="reviews"]')?.addEventListener('click', () => renderGlobalReviews(true));
 
-  document.querySelectorAll('.steam-hub-nav-item[data-tab="screenshots"], .steam-hub-nav-item[data-tab="artwork"], .steam-hub-nav-item[data-tab="streams"], .steam-hub-nav-item[data-tab="videos"], .steam-hub-nav-item[data-tab="guides"]').forEach(node => {
+  document.querySelector('.steam-hub-nav-item[data-tab="screenshots"]')?.addEventListener('click', () => renderMediaGallery(true));
+  document.querySelectorAll('.steam-hub-nav-item[data-tab="artwork"], .steam-hub-nav-item[data-tab="streams"], .steam-hub-nav-item[data-tab="videos"], .steam-hub-nav-item[data-tab="guides"]').forEach(node => {
     node.setAttribute('aria-disabled', 'true');
     node.title = '该社区板块尚未接入真实后端';
     node.addEventListener('click', () => toast('该社区板块尚未接入真实后端，本版本不会模拟发布成功。'));
@@ -231,7 +248,7 @@ function cardHtml(plugin) {
   return `
     <article class="dsh-card" data-plugin-id="${attribute(plugin.id)}" tabindex="0" aria-label="查看 ${attribute(plugin.name)} 详情">
       <div class="dsh-card-cover">
-        <img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} GitHub 预览" loading="lazy">
+        <img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} 封面" loading="lazy" data-cover-fallback>
         <div class="dsh-card-actions">
           <button class="dsh-icon-button favorite ${favorited ? 'active' : ''}" data-action="favorite" type="button" title="${favorited ? '取消收藏' : '收藏'}" aria-label="${favorited ? '取消收藏' : '收藏'}">${icons.heart}</button>
           <button class="dsh-icon-button ${subscribed ? 'active' : ''}" data-action="subscribe" type="button" title="${subscribed ? '取消订阅' : '订阅更新'}" aria-label="${subscribed ? '取消订阅' : '订阅更新'}">${subscribed ? icons.check : icons.plus}</button>
@@ -291,6 +308,7 @@ async function loadCatalog() {
     state.facets = result.facets || state.facets;
     state.total = result.total;
     main.innerHTML = catalogHtml(result);
+    wireMediaFallbacks(main);
     wireCatalog();
     document.title = 'DeepSeek Harness · DSH Creative Workshop';
   } catch (error) {
@@ -408,7 +426,18 @@ function reviewsHtml(reviews, pluginState) {
     ${reviews.total > reviews.pageSize ? `<nav class="dsh-pagination"><button class="dsh-button" data-review-page="${reviews.page - 1}" ${reviews.page <= 1 ? 'disabled' : ''}>上一页</button><span>第 ${reviews.page} 页</span><button class="dsh-button" data-review-page="${reviews.page + 1}" ${reviews.page * reviews.pageSize >= reviews.total ? 'disabled' : ''}>下一页</button></nav>` : ''}`;
 }
 
-function detailHtml(plugin, reviews, pluginState, revisions) {
+function projectMediaHtml(plugin) {
+  const media = (plugin.media || []).filter(item => mediaUrl(plugin, item));
+  if (!media.length) return '<div class="dsh-empty compact">该仓库未提供可用的项目图片，已使用工坊确定性封面。</div>';
+  return `<div class="dsh-media-grid">${media.map((item, index) => `<figure class="dsh-media-item"><img src="${attribute(mediaUrl(plugin, item))}" alt="${attribute(plugin.name)} 项目媒体 ${index + 1}" loading="lazy" data-hide-on-error><figcaption>${item.role === 'cover' ? '主封面' : `项目图 ${index + 1}`} · ${item.sourceType === 'package_preview' ? '仓库固定 Commit' : 'GitHub Social Preview'}</figcaption></figure>`).join('')}</div>`;
+}
+
+function relatedPluginsHtml(plugin, items) {
+  if (!items?.length) return '<div class="dsh-empty compact">暂无可解释的相关推荐。</div>';
+  return `<div class="dsh-related-list">${items.map(item => `<button class="dsh-related-item" data-related-plugin="${attribute(item.plugin.id)}" type="button"><img src="${attribute(coverUrl(item.plugin))}" alt="" loading="lazy" data-cover-fallback><span><strong>${escapeHtml(item.plugin.name)}</strong><small>${escapeHtml(item.reasons.join(' · '))}</small></span></button>`).join('')}</div>`;
+}
+
+function detailHtml(plugin, reviews, pluginState, revisions, relatedItems) {
   const verification = plugin.verification || {};
   const community = plugin.community || {};
   const favorited = Boolean(pluginState?.favorited || state.user?.favorites?.includes(plugin.id));
@@ -418,7 +447,7 @@ function detailHtml(plugin, reviews, pluginState, revisions) {
     <div class="dsh-detail">
       <nav class="dsh-breadcrumbs"><button id="backToCatalog" type="button">创意工坊</button><span>›</span><button data-author="${attribute(plugin.author)}" type="button">${escapeHtml(plugin.author)}</button><span>›</span><span>${escapeHtml(plugin.name)}</span></nav>
       <section class="dsh-detail-hero">
-        <div class="dsh-detail-cover"><img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} GitHub 预览"></div>
+        <div class="dsh-detail-cover"><img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} 封面" data-cover-fallback></div>
         <div class="dsh-detail-summary">
           <p class="dsh-kicker">${escapeHtml(plugin.kind)} · ${escapeHtml((plugin.surfaces || []).join(' / '))}</p>
           <h1>${escapeHtml(plugin.name)}</h1>
@@ -432,12 +461,14 @@ function detailHtml(plugin, reviews, pluginState, revisions) {
             <button class="dsh-button" id="addToCollection" type="button">加入合集</button>
             <button class="dsh-button" id="pluginDiscussions" type="button">讨论 ${formatNumber(community.discussionCount || 0)}</button>
             <button class="dsh-button" id="sharePlugin" type="button">复制站内链接</button>
+            <button class="dsh-button" id="reportPluginMedia" type="button">反馈封面问题</button>
           </div>
         </div>
       </section>
       <div class="dsh-verification-note">此条目通过固定 Commit 的 DSH Bundle 结构验证并经管理员批准。它不是 DeepSeek 官方认证，也不代表代码安全审计；“订阅”仅保存社区关注关系，不会在本机安装代码。</div>
       <div class="dsh-detail-grid">
         <div>
+          <section class="dsh-panel" id="projectMedia"><div class="dsh-panel-title-row"><div><h2>项目媒体</h2><p class="dsh-section-copy">图片仅从已验证仓库的固定 Commit 或 GitHub Social Preview 读取。</p></div><span class="dsh-source-pill">${formatNumber(plugin.mediaCount || 0)} 项</span></div>${projectMediaHtml(plugin)}</section>
           <section class="dsh-panel"><h2>标准化信息</h2><div class="dsh-stat-grid">
             ${stat('GitHub Stars', formatNumber(plugin.stars))}${stat('Forks', formatNumber(plugin.forks))}${stat('语言', plugin.language || 'Other')}${stat('许可证', plugin.license || '未声明')}
             ${stat('收藏', formatNumber(community.favoriteCount))}${stat('订阅', formatNumber(community.subscriptionCount))}${stat('当前评分', community.reviewScore ? community.reviewScore.toFixed(1) : '暂无')}${stat('讨论', formatNumber(community.discussionCount || 0))}${stat('最近推送', formatTime(plugin.pushedAt))}
@@ -450,6 +481,7 @@ function detailHtml(plugin, reviews, pluginState, revisions) {
           <section class="dsh-panel" id="communityReviews"><h2>社区评价</h2>${reviewsHtml(reviews, pluginState)}</section>
         </div>
         <aside class="dsh-detail-side">
+          <section class="dsh-panel"><h2>同仓库与相关插件</h2>${relatedPluginsHtml(plugin, relatedItems)}</section>
           <section class="dsh-panel"><h2>声明依赖</h2>${dependencies.length ? `<div class="dsh-list">${dependencies.map(dep => `<div class="dsh-dependency"><div><strong>${escapeHtml(dep.packageName)}</strong><br><span>${dep.resolved ? '已解析为公开工坊插件' : '外部或尚未收录的包'}</span></div>${dep.resolved ? `<button class="dsh-button" data-dependency="${attribute(dep.pluginId)}" type="button">查看</button>` : ''}</div>`).join('')}</div>` : '<p style="color:#8f98a0;font-size:11px">当前固定 Revision 未声明可识别的 DSH/Cordis 包依赖。系统不会推测不存在的关系。</p>'}</section>
           <section class="dsh-panel"><h2>仓库信息</h2><div class="dsh-code-list">${codeRow('仓库', plugin.fullName)}${codeRow('包名', plugin.packageName || '—')}${codeRow('包目录', plugin.packagePath || '.')}${codeRow('数据来源', 'GitHub dsh-plugin Topic')}</div></section>
         </aside>
@@ -460,12 +492,13 @@ function detailHtml(plugin, reviews, pluginState, revisions) {
 async function renderPlugin(id) {
   main.innerHTML = '<div class="dsh-loading"><div class="dsh-skeleton"></div><p>正在加载插件详情…</p></div>';
   try {
-    const requests = [api(`/plugins/${encodeURIComponent(id)}`), api(`/plugins/${encodeURIComponent(id)}/reviews?page=${state.reviewPage}&pageSize=20`), api(`/plugins/${encodeURIComponent(id)}/revisions`)];
+    const requests = [api(`/plugins/${encodeURIComponent(id)}`), api(`/plugins/${encodeURIComponent(id)}/reviews?page=${state.reviewPage}&pageSize=20`), api(`/plugins/${encodeURIComponent(id)}/revisions`), api(`/plugins/${encodeURIComponent(id)}/related?limit=8`)];
     if (state.user) requests.push(api(`/me/plugins/${encodeURIComponent(id)}/state`));
-    const [pluginResult, reviews, revisionResult, userState] = await Promise.all(requests);
+    const [pluginResult, reviews, revisionResult, relatedResult, userState] = await Promise.all(requests);
     const plugin = pluginResult.plugin;
     state.currentPlugin = plugin;
-    main.innerHTML = detailHtml(plugin, reviews, userState?.state || null, revisionResult.items);
+    main.innerHTML = detailHtml(plugin, reviews, userState?.state || null, revisionResult.items, relatedResult.items);
+    wireMediaFallbacks(main);
     wireDetail(plugin, userState?.state || null);
     document.title = `${plugin.name} · DSH Creative Workshop`;
     window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -480,12 +513,20 @@ function wireDetail(plugin, pluginState) {
   main.querySelectorAll('[data-author]').forEach(button => button.addEventListener('click', () => navigateCatalog(true, { author: button.dataset.author })));
   main.querySelectorAll('[data-topic]').forEach(button => button.addEventListener('click', () => navigateCatalog(true, { topic: button.dataset.topic })));
   main.querySelectorAll('[data-dependency]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.dependency)));
+  main.querySelectorAll('[data-related-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.relatedPlugin)));
   document.getElementById('detailFavorite')?.addEventListener('click', () => toggleDetailRelation('favorites', plugin.id));
   document.getElementById('detailSubscribe')?.addEventListener('click', () => toggleDetailRelation('subscriptions', plugin.id));
   document.getElementById('addToCollection')?.addEventListener('click', () => state.user ? openPluginCollections(plugin) : goLogin());
   document.getElementById('pluginDiscussions')?.addEventListener('click', () => renderDiscussions(true, plugin.id));
   document.getElementById('sharePlugin')?.addEventListener('click', async () => {
     try { await navigator.clipboard.writeText(location.href); toast('站内插件详情链接已复制。'); } catch { toast('无法访问剪贴板，请从地址栏复制链接。'); }
+  });
+  document.getElementById('reportPluginMedia')?.addEventListener('click', async () => {
+    if (!state.user) return goLogin();
+    const reason = prompt('请说明封面或项目图片的问题（3–500 字）：');
+    if (!reason) return;
+    try { await api(`/plugins/${encodeURIComponent(plugin.id)}/media/report`, { method: 'POST', body: JSON.stringify({ reason: reason.trim() }) }); toast('媒体问题已提交，管理员将在媒体中心处理。'); }
+    catch (error) { showError(error); }
   });
   document.getElementById('loginForReview')?.addEventListener('click', () => goLogin());
   document.getElementById('reviewForm')?.addEventListener('submit', async event => {
@@ -513,7 +554,7 @@ async function toggleDetailRelation(relation, pluginId) {
 }
 
 function accountNav(view) {
-  const items = [['overview','概览'],['profile','账号名'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['searches','保存搜索'],['collections','合集'],['sessions','设备会话'],['security','安全']];
+  const items = [['overview','概览'],['profile','账号名'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['searches','保存搜索'],['collections','合集'],['submissions','项目补录'],['sessions','设备会话'],['security','安全']];
   return `<nav class="dsh-account-nav">${items.map(([id,label]) => `<button class="dsh-button ${id === view ? 'active' : ''}" data-account-view="${id}" type="button">${label}</button>`).join('')}</nav>`;
 }
 
@@ -538,6 +579,7 @@ async function renderAccount(view) {
     else if (view === 'favorites' || view === 'subscriptions') await renderRelations(body, view);
     else if (view === 'searches') await renderSavedSearches(body);
     else if (view === 'collections') await renderCollections(body);
+    else if (view === 'submissions') await renderSubmissions(body);
     else if (view === 'sessions') await renderSessions(body);
     else renderSecurity(body);
   } catch (error) {
@@ -575,6 +617,18 @@ async function renderSavedSearches(body) {
     closeDialog(); navigateCatalog(true);
   }));
   body.querySelectorAll('[data-delete-search]').forEach(button => button.addEventListener('click', async () => { try { await api(`/me/saved-searches/${encodeURIComponent(button.dataset.deleteSearch)}`, { method: 'DELETE' }); await renderSavedSearches(body); } catch (error) { showError(error); } }));
+}
+
+async function renderSubmissions(body) {
+  const result = await api('/me/plugin-submissions');
+  const labels = { pending: '待审核', accepted: '已接收', rejected: '已拒绝' };
+  body.innerHTML = `${accountNav('submissions')}<section class="dsh-panel"><h2>补录 GitHub 项目</h2><p class="dsh-section-copy">请提交仓库首页。仓库需设置 <code>dsh-plugin</code> Topic，并包含可验证的 DSH Bundle 与 Cordis patch；审核通过不等于安全背书。</p><form class="dsh-form-grid" id="pluginSubmissionForm"><label class="dsh-field wide">GitHub 仓库地址<input name="repositoryUrl" type="url" placeholder="https://github.com/owner/repository" required></label><button class="dsh-button primary" type="submit">提交补录</button></form><p class="dsh-message" id="pluginSubmissionMessage"></p></section><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item"><div><h3>${escapeHtml(item.repositoryFullName)}</h3><p>${escapeHtml(labels[item.status] || item.status)} · ${formatTime(item.updatedAt)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</p></div><a class="dsh-button" href="${attribute(safeExternalUrl(item.repositoryUrl))}" target="_blank" rel="noopener noreferrer">查看仓库</a></div>`).join('') : '<div class="dsh-empty">尚未提交项目补录。</div>'}</div>`;
+  wireAccountNav();
+  document.getElementById('pluginSubmissionForm')?.addEventListener('submit', async event => {
+    event.preventDefault(); const data = new FormData(event.currentTarget); const message = document.getElementById('pluginSubmissionMessage');
+    try { await api('/me/plugin-submissions', { method: 'POST', body: JSON.stringify({ repositoryUrl: String(data.get('repositoryUrl')).trim() }) }); toast('项目已进入管理员补录审核。'); await renderSubmissions(body); }
+    catch (error) { message.className = 'dsh-message error'; message.textContent = error.message; }
+  });
 }
 
 function notificationText(item) {
@@ -774,6 +828,20 @@ async function renderPublicCollections(push = false) {
   } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
 }
 
+async function renderMediaGallery(push = false) {
+  if (push) history.pushState({}, '', '/?view=screenshots');
+  activateHub('screenshots');
+  main.innerHTML = '<div class="dsh-loading">正在读取项目媒体…</div>';
+  try {
+    const result = await api('/plugins?page=1&pageSize=100&sort=recent');
+    const items = result.items.filter(plugin => Number(plugin.mediaCount || 0) > 0);
+    main.innerHTML = `<div class="dsh-community-page"><header class="dsh-catalog-head"><div><p class="dsh-kicker">VERIFIED PROJECT MEDIA</p><h2>项目媒体</h2><p>封面和项目图由本站同源输出；远端图片失效时仍保留可识别的确定性封面。</p></div><span class="dsh-result-meta">${items.length} 个项目</span></header><div class="dsh-media-browser-grid">${items.map(plugin => `<button class="dsh-media-browser-card" data-media-plugin="${attribute(plugin.id)}" type="button"><img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} 封面" loading="lazy" data-cover-fallback><span><strong>${escapeHtml(plugin.name)}</strong><small>${escapeHtml(plugin.fullName)} · ${formatNumber(plugin.mediaCount)} 项媒体</small></span></button>`).join('') || '<div class="dsh-empty">暂无可展示的项目媒体。</div>'}</div></div>`;
+    wireMediaFallbacks(main);
+    main.querySelectorAll('[data-media-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.mediaPlugin)));
+    document.title = '项目媒体 · DSH Creative Workshop';
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
+}
+
 async function renderPublicCollectionDetail(id, push = false) {
   if (push) history.pushState({}, '', `/collection/?id=${encodeURIComponent(id)}`);
   main.innerHTML = '<div class="dsh-loading">正在读取合集…</div>';
@@ -874,6 +942,7 @@ function route() {
   if (view === 'discussions') return renderDiscussions(false, new URLSearchParams(location.search).get('pluginId'));
   if (view === 'reviews') return renderGlobalReviews(false);
   if (view === 'activity') return renderActivity(false);
+  if (view === 'screenshots') return renderMediaGallery(false);
   state.filters = filtersFromUrl();
   activateHub('workshop');
   return loadCatalog();

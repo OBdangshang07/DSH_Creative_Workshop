@@ -1,4 +1,4 @@
-# 当前 v1.1.3 实现
+# 当前 v1.1.4 实现
 
 ## 1. 范围
 
@@ -32,6 +32,10 @@ packages/
 GET  /health
 GET  /v1/plugins
 GET  /v1/plugins/:id
+GET  /v1/plugins/:id/cover.svg
+GET  /v1/plugins/:id/media/:index
+GET  /v1/plugins/:id/related
+POST /v1/plugins/:id/media/report
 GET  /v1/plugins/:id/revisions
 GET  /v1/plugins/:id/revisions/:revisionId
 GET  /v1/plugins/:id/reviews
@@ -47,6 +51,8 @@ POST /v1/reports
 GET  /v1/collections
 GET  /v1/collections/:id
 POST /v1/collections/:id/clone
+GET  /v1/me/plugin-submissions
+POST /v1/me/plugin-submissions
 GET  /v1/reviews
 GET  /v1/activity
 GET  /v1/releases
@@ -74,6 +80,12 @@ PUT  /v1/me/discussions/:id/subscription
 GET  /v1/admin/overview
 GET  /v1/admin/plugins
 PATCH /v1/admin/plugins/:id
+GET  /v1/admin/media
+POST /v1/admin/plugins/:id/media/retry
+GET  /v1/admin/media-reports
+PATCH /v1/admin/media-reports/:id
+GET  /v1/admin/plugin-submissions
+PATCH /v1/admin/plugin-submissions/:id
 PATCH /v1/admin/plugins/:id/revisions/:revisionId/changelog
 POST /v1/admin/plugins/:id/revisions/:revisionId/changelog/retry
 POST /v1/admin/sync-runs

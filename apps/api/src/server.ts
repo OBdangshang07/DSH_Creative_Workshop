@@ -15,10 +15,12 @@ const bootstrapAdmin = process.env.WORKSHOP_ADMIN_PASSWORD === undefined ? undef
   password: process.env.WORKSHOP_ADMIN_PASSWORD,
 }
 const githubToken = process.env.GITHUB_TOKEN?.trim()
+const mediaDirectory = process.env.WORKSHOP_MEDIA_DIRECTORY?.trim() || (process.env.NODE_ENV === 'production' ? '/var/lib/dsh-workshop/media' : undefined)
 const app = await buildApi({
   allowedOrigins,
   dataFile: process.env.WORKSHOP_DATABASE_FILE ?? '/var/lib/dsh-workshop/workshop.sqlite',
   legacyDataFile: process.env.WORKSHOP_DATA_FILE ?? '/var/lib/dsh-workshop/data.json',
+  ...(mediaDirectory === undefined ? {} : { mediaDirectory }),
   logger: process.env.NODE_ENV === 'production',
   ...(bootstrapAdmin === undefined ? {} : { bootstrapAdmin }),
   ...(githubToken === undefined || githubToken === '' ? {} : { githubToken }),

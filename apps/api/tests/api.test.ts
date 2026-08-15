@@ -29,6 +29,7 @@ describe('marketplace account and administration API', () => {
       accountStore: accounts,
       allowedOrigins: [origin],
       bootstrapAdmin: { username: 'admin', email: 'admin@example.test', password: 'AdminPassword12345' },
+      mediaFetcher: (async () => new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { 'Content-Type': 'image/png' } })) as typeof fetch,
     })
     const login = await app.inject({ method: 'POST', url: '/v1/auth/login', headers: { origin }, payload: { identity: 'admin', password: 'AdminPassword12345' } })
     adminCookie = login.headers['set-cookie']!.split(';', 1)[0]!
@@ -41,7 +42,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.3', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.4', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -69,14 +70,45 @@ describe('marketplace account and administration API', () => {
     expect(sessions.json().items[0]).toMatchObject({ current: true, userAgent: 'Vitest Browser' })
   })
 
+  it('serves same-origin media, accepts catalog submissions and governs media feedback', async () => {
+    const detail = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}` })
+    expect(detail.json().plugin).toMatchObject({ cover: { url: expect.stringContaining('/cover.svg') }, mediaCount: 1, media: [{ index: 0 }] })
+    const cover = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/cover.svg` })
+    expect(cover.statusCode).toBe(200)
+    expect(cover.headers['content-type']).toContain('image/svg+xml')
+    expect(cover.body).toContain('<svg')
+    const asset = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/media/0` })
+    expect(asset.statusCode).toBe(200)
+    expect(asset.headers['content-type']).toBe('image/png')
+    expect((await app.inject({ method: 'GET', url: '/v1/admin/media?status=ready', headers: { cookie: adminCookie } })).json().items[0]).toMatchObject({ pluginId: published.id, status: 'ready' })
+    expect((await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/related` })).json()).toMatchObject({ items: expect.any(Array) })
+
+    const submitted = await app.inject({ method: 'POST', url: '/v1/me/plugin-submissions', headers: { cookie: userCookie, origin }, payload: { repositoryUrl: 'https://github.com/community/new-dsh-plugin.git' } })
+    expect(submitted.statusCode).toBe(201)
+    expect(submitted.json().submission).toMatchObject({ repositoryFullName: 'community/new-dsh-plugin', status: 'pending' })
+    const submissionId = submitted.json().submission.id as string
+    expect((await app.inject({ method: 'GET', url: '/v1/me/plugin-submissions', headers: { cookie: userCookie } })).json().items[0].id).toBe(submissionId)
+    const accepted = await app.inject({ method: 'PATCH', url: `/v1/admin/plugin-submissions/${submissionId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'accepted' } })
+    expect(accepted.json().submission.status).toBe('accepted')
+
+    const reported = await app.inject({ method: 'POST', url: `/v1/plugins/${encodeURIComponent(published.id)}/media/report`, headers: { cookie: userCookie, origin }, payload: { reason: 'The project preview is cropped incorrectly.' } })
+    expect(reported.statusCode).toBe(201)
+    const reportList = await app.inject({ method: 'GET', url: '/v1/admin/media-reports?status=pending', headers: { cookie: adminCookie } })
+    expect(reportList.json().items[0]).toMatchObject({ pluginId: published.id, reporterName: 'normal-user' })
+    const resolved = await app.inject({ method: 'PATCH', url: `/v1/admin/media-reports/${reportList.json().items[0].id}`, headers: { cookie: adminCookie, origin }, payload: { status: 'resolved', resolution: 'Preview cache was refreshed.' } })
+    expect(resolved.json()).toEqual({ ok: true })
+    const reset = await app.inject({ method: 'POST', url: `/v1/admin/plugins/${encodeURIComponent(published.id)}/media/retry`, headers: { cookie: adminCookie, origin } })
+    expect(reset.json()).toMatchObject({ ok: true, cleared: 1 })
+  })
+
   it('publishes structured platform and plugin revision history into filtered activity', async () => {
     const releases = await app.inject({ method: 'GET', url: '/v1/releases' })
     const revisions = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/revisions` })
     const platformActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=platform' })
     const pluginActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=plugin' })
-    expect(releases.json().items[0]).toMatchObject({ version: '1.1.3', title: expect.any(String), changes: expect.any(Array) })
+    expect(releases.json().items[0]).toMatchObject({ version: '1.1.4', title: expect.any(String), changes: expect.any(Array) })
     expect(revisions.json().items[0]).toMatchObject({ revisionId: expect.any(String), release: { sourceType: 'missing', summary: '作者未提供更新日志。' } })
-    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.3', changes: expect.any(Array) } })
+    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.4', changes: expect.any(Array) } })
     expect(pluginActivity.json().items[0]).toMatchObject({ type: 'plugin.published', payload: { release: { sourceType: 'missing' } } })
   })
 
