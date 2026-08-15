@@ -8,6 +8,7 @@ import { CatalogSyncService } from './sync-service.js'
 import { APP_VERSION } from './version.js'
 import { PresenceService } from './presence-service.js'
 import { loadWorkshopRelease } from './release-manifest.js'
+import { MediaService, MediaUnavailableError } from './media-service.js'
 
 interface ApiOptions {
   allowedOrigins?: readonly string[]
@@ -18,6 +19,8 @@ interface ApiOptions {
   githubToken?: string
   logger?: boolean
   presenceService?: PresenceService
+  mediaDirectory?: string
+  mediaFetcher?: typeof fetch
 }
 
 interface PageQuery {
@@ -55,6 +58,8 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   accounts.publishWorkshopRelease(await loadWorkshopRelease())
   const sync = new CatalogSyncService(accounts, options.githubToken)
   const presence = options.presenceService ?? new PresenceService()
+  const media = new MediaService(accounts,{...(options.mediaDirectory===undefined?{}:{directory:options.mediaDirectory}),...(options.mediaFetcher===undefined?{}:{fetcher:options.mediaFetcher})})
+  await media.initialize()
   let lastPresenceBucket = ''
   const app = Fastify({
     logger: options.logger ?? false,
@@ -147,6 +152,34 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const item = accounts.publicPlugin(request.params.id)
     return item === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { plugin: item }
   })
+  app.get<{ Params: { id: string } }>('/v1/plugins/:id/cover.svg', async (request, reply) => {
+    const svg = media.coverSvg(request.params.id)
+    if (svg === undefined) return reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开'))
+    return reply.header('Content-Type', 'image/svg+xml; charset=utf-8').header('Cache-Control', 'public, max-age=300, stale-while-revalidate=86400').send(svg)
+  })
+  app.get<{ Params: { id: string; index: string } }>('/v1/plugins/:id/media/:index', async (request, reply) => {
+    const index = Number.parseInt(request.params.index, 10)
+    if (!Number.isInteger(index) || index < 0 || index > 7) return reply.code(404).send(error('PLUGIN_MEDIA_NOT_FOUND', '媒体不存在'))
+    try {
+      const asset = await media.asset(request.params.id, index)
+      return reply.header('Content-Type', asset.mime).header('ETag', `"${asset.etag}"`).header('Cache-Control', 'public, max-age=86400, immutable').send(Buffer.from(asset.body))
+    } catch (cause) {
+      if (cause instanceof MediaUnavailableError) return reply.code(404).send(error('PLUGIN_MEDIA_UNAVAILABLE', '媒体暂时不可用'))
+      throw cause
+    }
+  })
+  app.get<{ Params: { id: string }; Querystring: { limit?: string } }>('/v1/plugins/:id/related', async (request, reply) => {
+    const result = accounts.relatedPlugins(request.params.id, pageNumber(request.query.limit, 8))
+    return result === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { items: result }
+  })
+  app.post<{ Params: { id: string }; Body: { reason?: unknown } }>('/v1/plugins/:id/media/report', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const reason = request.body?.reason
+    if (typeof reason !== 'string' || reason.trim().length < 3 || reason.trim().length > 500) return reply.code(400).send(error('PLUGIN_MEDIA_REPORT_INVALID', '请填写 3–500 字的媒体问题说明'))
+    if (!accounts.allowAuthAttempt(`media-report:${user.id}`, 8, 60 * 60_000, 60 * 60_000)) return reply.code(429).send(error('PLUGIN_MEDIA_REPORT_RATE_LIMITED', '反馈过于频繁，请稍后再试'))
+    try { accounts.createMediaReport(user.id, request.params.id, reason.trim()); return reply.code(201).send({ ok: true }) }
+    catch (cause) { if (cause instanceof Error && cause.message === 'REPORT_TARGET_NOT_FOUND') return reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')); throw cause }
+  })
   app.get<{ Params: { id: string } }>('/v1/plugins/:id/revisions', async (request, reply) => {
     const items = accounts.pluginRevisions(request.params.id)
     return items === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { items }
@@ -158,6 +191,20 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.get('/v1/releases', async () => ({ items: accounts.workshopReleases() }))
 
   app.get('/v1/auth/me', async request => { const user = currentUser(request); return { authenticated: user !== undefined, user: user === undefined ? null : publicUser(user) } })
+  app.get('/v1/me/plugin-submissions', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { items: accounts.userPluginSubmissions(user.id) }
+  })
+  app.post<{ Body: { repositoryUrl?: unknown } }>('/v1/me/plugin-submissions', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    const repositoryUrl = request.body?.repositoryUrl
+    if (!validGitHubUrl(repositoryUrl)) return reply.code(400).send(error('PLUGIN_SUBMISSION_URL_INVALID', '请填写有效的 GitHub 仓库地址'))
+    const url = new URL(repositoryUrl); const segments = url.pathname.replace(/\.git\/?$/i, '').split('/').filter(Boolean)
+    if (segments.length !== 2 || !segments.every(segment => /^[A-Za-z0-9_.-]+$/.test(segment))) return reply.code(400).send(error('PLUGIN_SUBMISSION_URL_INVALID', '请填写仓库首页地址'))
+    if (!accounts.allowAuthAttempt(`plugin-submission:${user.id}`, 5, 24 * 60 * 60_000, 24 * 60 * 60_000)) return reply.code(429).send(error('PLUGIN_SUBMISSION_RATE_LIMITED', '今日补录次数已用完'))
+    const normalized = `${segments[0]}/${segments[1]}`
+    return reply.code(201).send({ submission: accounts.createPluginSubmission(user.id, `https://github.com/${normalized}`, normalized) })
+  })
   app.post<{ Body: { username?: unknown; email?: unknown; password?: unknown } }>('/v1/auth/register', async (request, reply) => {
     const body = request.body ?? {}
     const limitKey = `register:${request.ip}`
@@ -462,6 +509,40 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.get('/v1/admin/sync-runs', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
     return { ...accounts.listSyncRuns(), github: { authenticated: options.githubToken !== undefined, batchLimit: options.githubToken === undefined ? 15 : 60 } }
+  })
+  app.get<{ Querystring: PageQuery }>('/v1/admin/media', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.adminMedia({ ...(request.query.status ? { status: request.query.status } : {}), ...(request.query.q ? { q: request.query.q } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.get<{ Querystring: PageQuery }>('/v1/admin/media-reports', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.adminMediaReports({ ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.patch<{ Params: { id: string }; Body: { status?: unknown; resolution?: unknown } }>('/v1/admin/media-reports/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { status, resolution } = request.body ?? {}
+    if (!['resolved','dismissed'].includes(String(status)) || typeof resolution !== 'string' || resolution.trim().length < 3 || resolution.trim().length > 500) return reply.code(400).send(error('PLUGIN_MEDIA_REPORT_RESOLUTION_INVALID', '媒体反馈处理参数无效'))
+    const ok = accounts.resolveMediaReport(admin.id, request.params.id, status as 'resolved' | 'dismissed', resolution.trim(), context(request))
+    return ok ? { ok: true } : reply.code(404).send(error('PLUGIN_MEDIA_REPORT_NOT_FOUND', '媒体反馈记录不存在'))
+  })
+  app.post<{ Params: { id: string } }>('/v1/admin/plugins/:id/media/retry', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const cacheKeys = accounts.resetPluginMedia(admin.id, request.params.id, context(request))
+    if (cacheKeys === undefined) return reply.code(404).send(error('ADMIN_PLUGIN_NOT_FOUND', '插件不存在'))
+    await media.clear(cacheKeys)
+    return { ok: true, cleared: cacheKeys.length }
+  })
+  app.get<{ Querystring: PageQuery }>('/v1/admin/plugin-submissions', async (request, reply) => {
+    if (requireAdmin(request, reply) === undefined) return
+    return accounts.adminPluginSubmissions({ ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
+  })
+  app.patch<{ Params: { id: string }; Body: { status?: unknown; note?: unknown } }>('/v1/admin/plugin-submissions/:id', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const { status, note } = request.body ?? {}
+    if (!['pending','accepted','rejected'].includes(String(status)) || (note !== undefined && (typeof note !== 'string' || note.length > 500))) return reply.code(400).send(error('PLUGIN_SUBMISSION_MODERATION_INVALID', '补录审核参数无效'))
+    if (status === 'rejected' && (typeof note !== 'string' || note.trim().length < 3)) return reply.code(400).send(error('PLUGIN_SUBMISSION_NOTE_REQUIRED', '拒绝时请填写原因'))
+    const submission = accounts.moderatePluginSubmission(admin.id, request.params.id, status as 'pending' | 'accepted' | 'rejected', typeof note === 'string' ? note.trim() : undefined, context(request))
+    return submission === undefined ? reply.code(404).send(error('PLUGIN_SUBMISSION_NOT_FOUND', '补录记录不存在')) : { submission }
   })
   app.get<{ Params: { id: string } }>('/v1/admin/sync-runs/:id', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; const run = accounts.syncRun(request.params.id); return run ?? reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')) })
   app.post<{ Params: { id: string } }>('/v1/admin/sync-runs/:id/retry', async (request, reply) => {

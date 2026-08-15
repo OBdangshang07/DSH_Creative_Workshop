@@ -2,6 +2,26 @@
 
 All notable changes to DSH Creative Workshop are recorded here.
 
+## [1.1.4] - 2026-08-15
+
+### Added
+
+- Same-origin plugin cover and media endpoints with deterministic SVG branding, bounded caching and graceful remote-image fallback.
+- Fixed-commit repository preview discovery, public project-media galleries, explainable related-plugin suggestions and user media-problem reports.
+- Authenticated GitHub repository submissions with personal status history and administrator acceptance or rejection workflows.
+- Administration views for media health, cache retry, media-report resolution and repository-submission review.
+
+### Changed
+
+- Public cards no longer request GitHub images directly; every cover is served through the workshop and remains recognizable when upstream media fails.
+- Catalog verification excludes private packages and script/template directories, and deduplicates identical package names within a repository.
+- The previously disabled screenshots navigation now opens a read-only verified project-media browser.
+
+### Security
+
+- Repository media is limited to GitHub Social Preview or image files pinned to the verified repository and commit, with MIME, size, timeout and redirect checks.
+- Media and submission mutations require authentication, origin checks and rate limits; administrator actions are audit logged.
+
 ## [1.1.3] - 2026-08-14
 
 ### Added

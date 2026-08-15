@@ -11,7 +11,7 @@ interface GitHubRepository {
 interface GitTreeEntry { path?: unknown; type?: unknown; size?: unknown }
 interface RepositoryTree { truncated?: unknown; tree?: GitTreeEntry[] }
 interface PackageManifest {
-  name?: unknown; version?: unknown; exports?: unknown; dependencies?: unknown; peerDependencies?: unknown; engines?: unknown
+  name?: unknown; version?: unknown; private?: unknown; exports?: unknown; dependencies?: unknown; peerDependencies?: unknown; engines?: unknown
   dsh?: { bundle?: { patch?: unknown }; client?: { platform?: unknown; inject?: unknown }; workshop?: { releaseNotes?: unknown } }
 }
 interface GitHubRelease { tag_name?: unknown; name?: unknown; body?: unknown; html_url?: unknown; published_at?: unknown }
@@ -133,6 +133,31 @@ function patchEvidence(value: unknown): { entryIds: string[]; moduleSpecifiers: 
 
 function rawUrl(fullName: string, commitSha: string, filePath: string): string {
   return `https://raw.githubusercontent.com/${fullName}/${commitSha}/${filePath.split('/').map(encodeURIComponent).join('/')}`
+}
+
+const previewName = /^(?:cover|banner|hero|screenshot[^/]*)\.(?:png|jpe?g|webp|gif)$/i
+
+function previewFiles(files: Iterable<string>, packageJsonPath: string): string[] {
+  const directory = path.dirname(packageJsonPath)
+  const prefix = directory === '.' ? '' : `${directory}/`
+  return [...files].flatMap(file => {
+    if (!file.startsWith(prefix)) return []
+    const relative = file.slice(prefix.length)
+    if (/(^|\/)(?:node_modules|vendor|fixtures?|examples?|tests?|archive|scripts?|templates?)(\/|$)/i.test(relative)) return []
+    const name = path.basename(relative)
+    const screenshotDirectory = /(^|\/)screenshots?\//i.test(relative)
+    if (!previewName.test(name) && !(screenshotDirectory && /\.(?:png|jpe?g|webp|gif)$/i.test(name))) return []
+    const stem = name.replace(/\.[^.]+$/, '').toLowerCase()
+    const role = stem === 'cover' ? 0 : stem === 'banner' ? 1 : stem === 'hero' ? 2 : 3
+    const preferredDirectory = relative.toLowerCase().startsWith('preview/') ? 0 : relative.includes('/') ? 2 : 1
+    return [{ file, priority: role * 10 + preferredDirectory }]
+  }).sort((left, right) => left.priority - right.priority || left.file.length - right.file.length || left.file.localeCompare(right.file))
+    .slice(0, 8).map(item => item.file)
+}
+
+function packagePreference(plugin: GitHubPluginRecord): number {
+  const packagePath = plugin.packagePath ?? '.'
+  return packagePath === '.' ? 0 : packagePath.split('/').length * 1000 + packagePath.length
 }
 
 async function fetchText(fetcher: Fetcher, url: string, token?: string): Promise<string | undefined> {
@@ -324,7 +349,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     return releasesPromise
   }
   const packagePaths = [...files.keys()].filter(file => file === 'package.json' || file.endsWith('/package.json'))
-    .filter(file => !/(^|\/)(?:node_modules|vendor|fixtures?|examples?|tests?|archive)(\/|$)/i.test(file)).slice(0, 100)
+    .filter(file => !/(^|\/)(?:node_modules|vendor|fixtures?|examples?|tests?|archive|scripts?|templates?)(\/|$)/i.test(file)).slice(0, 100)
   const plugins: GitHubPluginRecord[] = []
   const failures: Array<{ packageJsonPath: string; reason: string }> = []
 
@@ -335,6 +360,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     if (manifestText === undefined) { failures.push({ packageJsonPath, reason: 'MANIFEST_FETCH_FAILED' }); continue }
     let manifest: PackageManifest
     try { manifest = JSON.parse(manifestText) as PackageManifest } catch { failures.push({ packageJsonPath, reason: 'MANIFEST_JSON_INVALID' }); continue }
+    if (manifest.private === true) { failures.push({ packageJsonPath, reason: 'PRIVATE_PACKAGE_EXCLUDED' }); continue }
     if (manifest.dsh?.bundle === undefined) continue
     if (typeof manifest.name !== 'string' || manifest.name.trim() === '') { failures.push({ packageJsonPath, reason: 'PACKAGE_NAME_MISSING' }); continue }
     const patchPath = safeBundlePatch(packageJsonPath, manifest.dsh.bundle.patch)
@@ -392,6 +418,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       failures.push({ packageJsonPath, reason: 'DSH_DEPENDENCY_EVIDENCE_WEAK' })
       continue
     }
+    const previewUrls = previewFiles(files.keys(), packageJsonPath).map(file => rawUrl(fullName, commit.sha as string, file))
     plugins.push({
       id: pluginId(fullName, packageJsonPath), fullName, name: manifest.name, packageName: manifest.name,
       packagePath: path.dirname(packageJsonPath) === '.' ? '.' : path.dirname(packageJsonPath),
@@ -407,11 +434,22 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       topics: Array.isArray(repository.topics) ? repository.topics.filter((topic): topic is string => typeof topic === 'string') : [],
       kind, surfaces: surfacesFor(manifest, kind), declaredDependencies: [...dependencies].sort(), dshDependencies: dshDependencies.sort(),
       ...(version === undefined ? {} : { version }), ...(releaseNotes === undefined ? {} : { releaseNotes }),
+      ...(previewUrls.length === 0 ? {} : { previewUrls }),
       source: 'github-topic', securityReviewed: false, verification,
     })
   }
-  if (plugins.length === 0) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'rejected', reason: failures[0]?.reason ?? 'DSH_BUNDLE_NOT_FOUND', evidence: { packageCount: packagePaths.length, failures } }
-  return { repository: fullName, commitSha: commit.sha, plugins, status: 'verified', evidence: { packageCount: packagePaths.length, bundleCount: plugins.length, failures } }
+  const uniquePlugins = new Map<string, GitHubPluginRecord>()
+  for (const plugin of plugins) {
+    const key = String(plugin.packageName ?? plugin.name).trim().toLowerCase()
+    const current = uniquePlugins.get(key)
+    if (current === undefined || packagePreference(plugin) < packagePreference(current)) {
+      if (current !== undefined) failures.push({ packageJsonPath: current.verification.packageJsonPath, reason: 'DUPLICATE_PACKAGE_NAME' })
+      uniquePlugins.set(key, plugin)
+    } else failures.push({ packageJsonPath: plugin.verification.packageJsonPath, reason: 'DUPLICATE_PACKAGE_NAME' })
+  }
+  const verifiedPlugins = [...uniquePlugins.values()]
+  if (verifiedPlugins.length === 0) return { repository: fullName, commitSha: commit.sha, plugins: [], status: 'rejected', reason: failures[0]?.reason ?? 'DSH_BUNDLE_NOT_FOUND', evidence: { packageCount: packagePaths.length, failures } }
+  return { repository: fullName, commitSha: commit.sha, plugins: verifiedPlugins, status: 'verified', evidence: { packageCount: packagePaths.length, bundleCount: verifiedPlugins.length, failures } }
 }
 
 export async function verifyGitHubRepository(repository: GitHubRepository, token?: string, fetcher: Fetcher = fetch): Promise<GitHubPluginRecord | undefined> {
