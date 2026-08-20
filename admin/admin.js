@@ -1,7 +1,7 @@
 import { api, escapeHtml, formatTime } from '/js/account-api.js';
 
 const main = document.getElementById('mainContent');
-const titles = { overview: '运行总览', plugins: '插件审核', sync: '目录同步', releases: '更新日志', users: '用户管理', community: '社区治理', media: '媒体与补录', audit: '审计日志' };
+const titles = { overview: '运行总览', homepage: '首页运营', plugins: '插件审核', sync: '目录同步', releases: '更新日志', users: '用户管理', community: '社区治理', media: '媒体与补录', audit: '审计日志' };
 const state = {
   view: 'overview', overview: null,
   plugins: { page: 1, q: '', status: '', kind: '' },
@@ -95,6 +95,27 @@ async function renderOverview() {
   main.querySelectorAll('[data-jump]').forEach(button => button.addEventListener('click', () => switchView(button.dataset.jump)));
 }
 
+function homepageLane(title, description, items, editable = false) {
+  return `<section class="panel homepage-lane"><div class="panel-head"><div><h2>${title}</h2><p>${description}</p></div><strong>${items.length}</strong></div><div class="panel-body homepage-cards">
+    ${items.map(plugin => `<article><img src="/api/v1/plugins/${encodeURIComponent(plugin.id)}/cover.svg" alt=""><div><strong>${escapeHtml(plugin.name)}</strong><small>${escapeHtml(plugin.fullName)} · ★ ${plugin.stars}</small></div>${editable ? `<button class="button" data-home-feature="${escapeHtml(plugin.id)}" data-revision="${escapeHtml(plugin.revisionId)}">移出精选</button>` : ''}</article>`).join('') || '<div class="empty">当前没有可展示内容</div>'}
+  </div></section>`;
+}
+
+async function renderHomepage() {
+  const home = await api('/admin/homepage');
+  main.innerHTML = `<div class="section-note">首页内容全部来自已公开且通过结构审核的 Revision。精选可人工维护；热门、趋势与最近更新由真实社区信号和仓库数据自动排序。</div>
+    <div class="homepage-summary"><article><span>公开插件</span><strong>${home.stats.plugins}</strong></article><article><span>公开合集</span><strong>${home.stats.collections}</strong></article><article><span>公开讨论</span><strong>${home.stats.discussions}</strong></article><article><span>生成时间</span><strong>${formatTime(home.generatedAt)}</strong></article></div>
+    ${homepageLane('首页精选', 'Hero 与“今日精选”优先使用这些项目', home.featured, true)}
+    ${homepageLane('热门项目', '按订阅与社区关注排序', home.popular)}
+    ${homepageLane('趋势项目', '按评分和近期社区信号排序', home.trending)}
+    ${homepageLane('最近更新', '按固定 Revision 的更新时间排序', home.recent)}`;
+  main.querySelectorAll('[data-home-feature]').forEach(button => button.addEventListener('click', async () => {
+    const confirmation = await confirmAction({ title: '移出首页精选？', body: '项目仍会保留在公开目录，仅不再参与首页精选排序。', confirmText: '确认移出' });
+    if (confirmation === null) return;
+    try { await api(`/admin/plugins/${encodeURIComponent(button.dataset.homeFeature)}`, { method: 'PATCH', body: JSON.stringify({ revisionId: button.dataset.revision, featured: false }) }); toast('首页精选已更新'); await renderHomepage(); } catch (error) { toast(error.message, 'error'); }
+  }));
+}
+
 async function renderPlugins() {
   const query = new URLSearchParams({ page: state.plugins.page, pageSize: 25 });
   ['q', 'status', 'kind'].forEach(key => { if (state.plugins[key]) query.set(key, state.plugins[key]); });
@@ -124,8 +145,15 @@ async function renderSync() {
     ? '<span class="sync-credential ok">已使用只读 GitHub Token · 单批最多 60 个仓库</span>'
     : '<span class="sync-credential warning">匿名 GitHub API · 单批最多 15 个仓库；延后项请使用“继续同步”分批处理</span>';
   main.innerHTML = `<section class="sync-hero"><div><h2>GitHub Topic → 固定 commit → 多 Bundle 验证</h2><p>Topic 仅用于候选发现，并交叉覆盖最近更新与高 Star 仓库。任务不会运行第三方代码；新 Revision 默认待审核，公开目录不会因部分失败而减少。</p>${credentialNote}</div><button class="button primary" id="createSync" ${active ? 'disabled' : ''}>${active ? '同步进行中' : '创建新同步'}</button></section>
+    <section class="panel exact-sync"><div class="panel-head"><div><h2>精确仓库同步</h2><p>用于补录搜索窗口之外的 DSH 项目；每行一个 owner/repository，最多 10 个。</p></div></div><div class="panel-body"><form id="exactSyncForm"><textarea name="repositories" rows="4" placeholder="yjh051108/dsh-routing-suite&#10;owner/dsh-anchored-standard" required></textarea><div class="actions"><button class="button primary" type="submit">立即验证</button></div></form><div id="exactSyncResult"></div></div></section>
     <div class="table-wrap"><table><thead><tr><th>任务 / 时间</th><th>状态</th><th>处理结果</th><th>核心 API 余量</th><th>操作</th></tr></thead><tbody>${result.items.map(run => `<tr><td><code>${escapeHtml(run.id)}</code><br><small>${formatTime(run.createdAt)}${run.retryOf ? `<br>续跑自 ${escapeHtml(run.retryOf)}` : ''}<br>${run.githubAuthenticated ? 'Token' : '匿名'}</small></td><td>${badge(run.status)}${run.error ? `<br><span class="reason">${escapeHtml(run.error)}</span>` : ''}</td><td><small>候选仓库 ${run.discovered} · 验证仓库 ${run.verified}<br>Bundle ${run.bundlesFound} · 拒绝 ${run.rejected}<br>延后 ${run.deferred} · 失败 ${run.failed}</small></td><td><small>${run.githubRemaining ?? '—'}${run.githubResetAt ? `<br>重置 ${formatTime(run.githubResetAt)}` : ''}</small></td><td><div class="actions"><button data-sync-detail="${run.id}">查看明细</button>${run.deferred > 0 || run.failed > 0 ? `<button data-sync-retry="${run.id}">继续同步</button>` : ''}</div></td></tr><tr id="detail-${run.id}" hidden><td colspan="5"><div class="sync-detail">加载中…</div></td></tr>`).join('') || '<tr><td colspan="5" class="empty">尚无同步任务</td></tr>'}</tbody></table></div>`;
   document.getElementById('createSync').addEventListener('click', async event => { event.currentTarget.disabled = true; try { await api('/admin/sync-runs', { method: 'POST' }); toast('同步任务已创建，正在后台执行'); await renderSync(); } catch (error) { toast(error.message, 'error'); event.currentTarget.disabled = false; } });
+  document.getElementById('exactSyncForm').addEventListener('submit', async event => {
+    event.preventDefault(); const button = event.currentTarget.querySelector('button'); const output = document.getElementById('exactSyncResult');
+    const repositories = String(new FormData(event.currentTarget).get('repositories') || '').split(/\r?\n|,/).map(item => item.trim().replace(/^https:\/\/github\.com\//i, '').replace(/\/$/, '')).filter(Boolean);
+    button.disabled = true; output.innerHTML = '<div class="empty">正在读取固定 Commit 并执行结构验证…</div>';
+    try { const syncResult = await api('/admin/sync-repositories', { method: 'POST', body: JSON.stringify({ repositories }) }); output.innerHTML = `<div class="exact-results">${syncResult.artifacts.map(item => `<article>${badge(item.status)}<strong>${escapeHtml(item.repository)}</strong><small>${escapeHtml(item.reason || `${item.items.length} 个产物`)}</small></article>`).join('')}</div>`; toast('精确仓库验证完成'); } catch (error) { output.innerHTML = `<div class="empty">${escapeHtml(error.message)}</div>`; toast(error.message, 'error'); } finally { button.disabled = false; }
+  });
   main.querySelectorAll('[data-sync-detail]').forEach(button => button.addEventListener('click', async () => {
     const row = document.getElementById(`detail-${button.dataset.syncDetail}`); row.hidden = !row.hidden; if (row.hidden || row.dataset.loaded) return;
     try { const run = await api(`/admin/sync-runs/${encodeURIComponent(button.dataset.syncDetail)}`); row.dataset.loaded = 'true'; row.querySelector('.sync-detail').innerHTML = run.candidates?.length ? `<div class="table-wrap"><table><thead><tr><th>候选仓库</th><th>Commit</th><th>结果</th><th>原因 / Bundle</th></tr></thead><tbody>${run.candidates.map(candidate => `<tr><td>${escapeHtml(candidate.repository)}</td><td><code>${escapeHtml(candidate.commitSha?.slice(0,12) || '—')}</code></td><td>${badge(candidate.status)}</td><td><small>${candidate.bundleCount} Bundle${candidate.reason ? `<br><span class="reason">${escapeHtml(candidate.reason)}</span>` : ''}</small></td></tr>`).join('')}</tbody></table></div>` : '<div class="empty">当前任务尚无候选明细</div>'; } catch (error) { row.querySelector('.sync-detail').textContent = error.message; }
@@ -241,7 +269,7 @@ async function renderAudit() {
   document.getElementById('auditFilters').addEventListener('submit', event => { event.preventDefault(); const values = new FormData(event.currentTarget); state.audit = { ...state.audit, page: 1, q: String(values.get('q') || '').trim(), action: String(values.get('action') || '') }; renderAudit().catch(showFailure); }); bindCommon();
 }
 
-const renderers = { overview: renderOverview, plugins: renderPlugins, sync: renderSync, releases: renderReleases, users: renderUsers, community: renderCommunity, media: renderMedia, audit: renderAudit };
+const renderers = { overview: renderOverview, homepage: renderHomepage, plugins: renderPlugins, sync: renderSync, releases: renderReleases, users: renderUsers, community: renderCommunity, media: renderMedia, audit: renderAudit };
 async function renderCurrent() { clearTimeout(state.syncTimer); main.setAttribute('aria-busy', 'true'); try { await renderers[state.view](); main.focus({ preventScroll: true }); } catch (error) { showFailure(error); } finally { main.removeAttribute('aria-busy'); } }
 function switchView(view) { state.view = view; document.getElementById('viewTitle').textContent = titles[view]; document.querySelectorAll('[data-view]').forEach(button => button.classList.toggle('active', button.dataset.view === view)); history.replaceState(null, '', `#${view}`); renderCurrent(); }
 function showFailure(error) { if ([401,403].includes(error.status)) { location.replace(`/login/?returnTo=${encodeURIComponent('/admin/')}`); return; } main.innerHTML = `<section class="panel"><div class="panel-body empty">加载失败：${escapeHtml(error.message)}<br><br><button class="button" id="retryButton">重试</button></div></section>`; document.getElementById('retryButton').addEventListener('click', renderCurrent); }

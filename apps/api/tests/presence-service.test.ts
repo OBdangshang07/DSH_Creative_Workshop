@@ -32,4 +32,16 @@ describe('PresenceService', () => {
     const heartbeat = presence.heartbeat(undefined, '192.0.2.30', 'Mozilla/5.0', 1_000)
     expect(presence.leave(heartbeat.token, 2_000)).toBe(0)
   })
+
+  it('returns unique visible signed-in users while keeping hidden users in the count', () => {
+    const presence = new PresenceService()
+    const at = Date.parse('2026-08-20T00:00:00Z')
+    const first = presence.heartbeat(undefined, '192.0.2.40', 'Browser', at, { id: 'user-1', username: 'alice', role: 'user', visible: true })
+    presence.heartbeat(undefined, '192.0.2.41', 'Browser', at + 1, { id: 'user-1', username: 'alice', role: 'user', visible: true })
+    presence.heartbeat(undefined, '192.0.2.42', 'Browser', at + 2, { id: 'user-2', username: 'hidden-admin', role: 'admin', visible: false })
+    const summary = presence.summary(at + 3)
+    expect(first.visibleUsers).toEqual([expect.objectContaining({ id: 'user-1', username: 'alice' })])
+    expect(summary).toMatchObject({ online: 3, authenticated: 2, guests: 0 })
+    expect(summary.visibleUsers).toEqual([expect.objectContaining({ username: 'alice', role: 'user' })])
+  })
 })

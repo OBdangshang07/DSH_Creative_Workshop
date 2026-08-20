@@ -2,6 +2,10 @@ import { randomBytes } from 'node:crypto'
 
 interface PresenceEntry {
   lastSeen: number
+  userId?: string
+  username?: string
+  role?: 'user' | 'admin'
+  visible: boolean
 }
 
 interface IssuanceWindow {
@@ -15,6 +19,23 @@ export interface PresenceHeartbeat {
   online: number
   sampledAt: string
   windowSeconds: number
+  authenticated: number
+  guests: number
+  visibleUsers: PresenceUser[]
+}
+
+export interface PresenceUser {
+  id: string
+  username: string
+  role: 'user' | 'admin'
+  lastSeenAt: string
+}
+
+export interface PresenceIdentity {
+  id: string
+  username: string
+  role: 'user' | 'admin'
+  visible: boolean
 }
 
 export class PresenceService {
@@ -28,7 +49,7 @@ export class PresenceService {
     private readonly issuanceLimit = 12,
   ) {}
 
-  heartbeat(token: string | undefined, ip: string, userAgent = '', at = Date.now()): PresenceHeartbeat {
+  heartbeat(token: string | undefined, ip: string, userAgent = '', at = Date.now(), identity?: PresenceIdentity): PresenceHeartbeat {
     this.prune(at)
     if (this.isBot(userAgent)) return this.result(undefined, false, at)
 
@@ -38,7 +59,10 @@ export class PresenceService {
       activeToken = randomBytes(24).toString('base64url')
       issued = true
     }
-    if (activeToken !== undefined) this.entries.set(activeToken, { lastSeen: at })
+    if (activeToken !== undefined) this.entries.set(activeToken, {
+      lastSeen: at, visible: identity?.visible ?? false,
+      ...(identity === undefined ? {} : { userId: identity.id, username: identity.username, role: identity.role }),
+    })
     this.recordSample(at)
     return this.result(activeToken, issued, at)
   }
@@ -55,8 +79,20 @@ export class PresenceService {
     const since = at - 24 * 60 * 60 * 1000
     while (this.samples.length > 0 && this.samples[0]!.at < since) this.samples.shift()
     const peak24h = this.samples.reduce((peak, sample) => Math.max(peak, sample.online), this.entries.size)
+    const authenticatedUsers = new Set([...this.entries.values()].flatMap(entry => entry.userId === undefined ? [] : [entry.userId]))
+    const visibleUsers = new Map<string, PresenceUser>()
+    for (const entry of this.entries.values()) {
+      if (!entry.visible || entry.userId === undefined || entry.username === undefined || entry.role === undefined) continue
+      const current = visibleUsers.get(entry.userId)
+      if (current === undefined || Date.parse(current.lastSeenAt) < entry.lastSeen) visibleUsers.set(entry.userId, {
+        id: entry.userId, username: entry.username, role: entry.role, lastSeenAt: new Date(entry.lastSeen).toISOString(),
+      })
+    }
     return {
       online: this.entries.size,
+      authenticated: authenticatedUsers.size,
+      guests: [...this.entries.values()].filter(entry => entry.userId === undefined).length,
+      visibleUsers: [...visibleUsers.values()].sort((left, right) => left.username.localeCompare(right.username)).slice(0, 20),
       peak24h,
       sampledAt: new Date(at).toISOString(),
       windowSeconds: Math.round(this.activeWindowMs / 1000),
@@ -64,10 +100,7 @@ export class PresenceService {
   }
 
   private result(token: string | undefined, issued: boolean, at: number): PresenceHeartbeat {
-    return {
-      ...(token === undefined ? {} : { token }), issued, online: this.entries.size,
-      sampledAt: new Date(at).toISOString(), windowSeconds: Math.round(this.activeWindowMs / 1000),
-    }
+    return { ...(token === undefined ? {} : { token }), issued, ...this.summary(at) }
   }
 
   private prune(at: number): void {

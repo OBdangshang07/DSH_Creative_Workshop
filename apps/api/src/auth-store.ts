@@ -608,6 +608,18 @@ export class AccountStore {
         platform_releases INTEGER NOT NULL DEFAULT 1,
         updated_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS user_privacy(
+        user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        show_online INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS recent_views(
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        plugin_id TEXT NOT NULL REFERENCES plugins(id) ON DELETE CASCADE,
+        viewed_at TEXT NOT NULL,
+        PRIMARY KEY(user_id,plugin_id)
+      );
+      CREATE INDEX IF NOT EXISTS recent_views_user_idx ON recent_views(user_id,viewed_at DESC);
       CREATE TABLE IF NOT EXISTS discussion_subscriptions(
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         thread_id TEXT NOT NULL REFERENCES discussion_threads(id) ON DELETE CASCADE,
@@ -1027,6 +1039,49 @@ export class AccountStore {
       preferences.collectionUpdates ? 1 : 0, preferences.platformReleases ? 1 : 0, nowIso(),
     )
     return preferences
+  }
+
+  privacy(userId: string) {
+    const row = this.database.prepare('SELECT show_online FROM user_privacy WHERE user_id=?').get(userId) as SqlRow | undefined
+    return { showOnline: row === undefined || Number(row.show_online) === 1 }
+  }
+
+  updatePrivacy(userId: string, showOnline: boolean) {
+    this.database.prepare(`INSERT INTO user_privacy(user_id,show_online,updated_at) VALUES(?,?,?)
+      ON CONFLICT(user_id) DO UPDATE SET show_online=excluded.show_online,updated_at=excluded.updated_at`).run(userId, showOnline ? 1 : 0, nowIso())
+    return { showOnline }
+  }
+
+  recordRecentView(userId: string, pluginId: string): boolean {
+    if (!this.isPublicPlugin(pluginId)) return false
+    this.database.prepare(`INSERT INTO recent_views(user_id,plugin_id,viewed_at) VALUES(?,?,?)
+      ON CONFLICT(user_id,plugin_id) DO UPDATE SET viewed_at=excluded.viewed_at`).run(userId, pluginId, nowIso())
+    this.database.prepare(`DELETE FROM recent_views WHERE user_id=? AND plugin_id NOT IN (
+      SELECT plugin_id FROM recent_views WHERE user_id=? ORDER BY viewed_at DESC LIMIT 30
+    )`).run(userId, userId)
+    return true
+  }
+
+  recentViews(userId: string, limit = 12) {
+    const rows = this.database.prepare(`SELECT r.plugin_id FROM recent_views r
+      JOIN plugins p ON p.id=r.plugin_id JOIN moderation_decisions m ON m.revision_id=p.published_revision_id
+      WHERE r.user_id=? AND m.status='approved' ORDER BY r.viewed_at DESC LIMIT ?`).all(userId, Math.min(30, Math.max(1, limit))) as SqlRow[]
+    return rows.flatMap(row => { const plugin = this.publicPlugin(String(row.plugin_id)); return plugin === undefined ? [] : [plugin] })
+  }
+
+  homepage() {
+    const base = this.githubSnapshot(false, { page: 1, pageSize: 100 })
+    const summary = this.summary()
+    const featured = base.items.filter(item => item.moderation.featured).slice(0, 8)
+    const popular = this.githubSnapshot(false, { sort: 'subscriptions', page: 1, pageSize: 8 }).items
+    const trending = this.githubSnapshot(false, { sort: 'rating', page: 1, pageSize: 8 }).items
+    const recent = this.githubSnapshot(false, { sort: 'recent', page: 1, pageSize: 8 }).items
+    return {
+      featured: featured.length > 0 ? featured : popular.slice(0, 5), popular, trending, recent,
+      collections: this.publicCollections({ page: 1, pageSize: 6 }).items,
+      stats: { plugins: base.total, collections: summary.publicCollections, discussions: summary.discussions },
+      generatedAt: nowIso(),
+    }
   }
 
   savedSearches(userId: string): SavedSearch[] {

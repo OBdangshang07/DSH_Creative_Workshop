@@ -1,0 +1,15 @@
+{
+  "version": "1.2.0",
+  "title": "工坊首页与社区在线状态",
+  "summary": "新增独立的 Steam 风格首页、在线用户名隐私控制、最近浏览、插件对比与首页运营能力，并扩展精确仓库同步和 GitHub 候选发现范围。",
+  "publishedAt": "2026-08-20T08:30:00.000Z",
+  "changes": [
+    { "type": "added", "text": "新增首页精选、热门趋势、最近更新、继续浏览与社区合集模块。" },
+    { "type": "added", "text": "在线人数支持展示允许公开的用户名，并提供账号隐私开关。" },
+    { "type": "added", "text": "新增最近浏览记录、2–4 项插件对比和首页运营管理视图。" },
+    { "type": "changed", "text": "根路径调整为首页，完整插件目录迁移至 /workshop/，旧筛选链接保持兼容。" },
+    { "type": "changed", "text": "登录 GitHub Token 时可分页发现更多候选，并支持管理员精确同步指定仓库。" },
+    { "type": "fixed", "text": "收紧 Suite 识别，普通 Git submodule 项目不再被误判为 DeepSeek Harness 产物。" },
+    { "type": "security", "text": "隐身用户仅计入总数而不公开用户名；新发现产物仍必须经过固定 Commit 验证与人工审核。" }
+  ]
+}

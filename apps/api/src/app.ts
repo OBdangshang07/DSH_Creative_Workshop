@@ -109,12 +109,19 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   app.get('/health/ready', async () => ({ ok: true, version: APP_VERSION, storage: 'sqlite-wal', catalog: accounts.summary().plugins }))
   app.get('/v1/presence/summary', async (_request, reply) => { reply.header('Cache-Control', 'no-store'); return presence.summary() })
   app.post('/v1/presence/heartbeat', async (request, reply) => {
-    const result = presence.heartbeat(cookieValue(request.headers.cookie, 'dsh_presence'), request.ip, request.headers['user-agent'] ?? '')
+    const user = currentUser(request)
+    const result = presence.heartbeat(
+      cookieValue(request.headers.cookie, 'dsh_presence'), request.ip, request.headers['user-agent'] ?? '', Date.now(),
+      user === undefined ? undefined : { id: user.id, username: user.username, role: user.role, visible: accounts.privacy(user.id).showOnline },
+    )
     if (result.issued && result.token !== undefined) setPresence(reply, result.token)
     const bucket = result.sampledAt.slice(0, 16)
     if (result.token !== undefined && bucket !== lastPresenceBucket) { lastPresenceBucket = bucket; accounts.recordPresenceSnapshot(result.online, new Date(result.sampledAt)) }
     reply.header('Cache-Control', 'no-store')
-    return { online: result.online, sampledAt: result.sampledAt, windowSeconds: result.windowSeconds }
+    return {
+      online: result.online, authenticated: result.authenticated, guests: result.guests,
+      visibleUsers: result.visibleUsers, sampledAt: result.sampledAt, windowSeconds: result.windowSeconds,
+    }
   })
   app.post('/v1/presence/leave', async (request, reply) => {
     const online = presence.leave(cookieValue(request.headers.cookie, 'dsh_presence'))
@@ -150,6 +157,10 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   }
   app.get<{ Querystring: PageQuery }>('/v1/plugins', publicCatalog)
   app.get<{ Querystring: PageQuery }>('/v1/github-plugins', publicCatalog)
+  app.get('/v1/home', async (_request, reply) => {
+    reply.header('Cache-Control', 'public, max-age=30, stale-while-revalidate=60')
+    return accounts.homepage()
+  })
   app.get<{ Params: { id: string } }>('/v1/plugins/:id', async (request, reply) => {
     const item = accounts.publicPlugin(request.params.id)
     return item === undefined ? reply.code(404).send(error('CATALOG_PLUGIN_NOT_FOUND', '插件不存在或未公开')) : { plugin: item }
@@ -303,6 +314,20 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const preferences = Object.fromEntries(keys.map(key => [key, body[key] ?? current[key]])) as unknown as NotificationPreferences
     return { preferences: accounts.updateNotificationPreferences(user.id, preferences) }
   })
+  app.get('/v1/me/privacy', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { privacy: accounts.privacy(user.id) } })
+  app.patch<{ Body: { showOnline?: unknown } }>('/v1/me/privacy', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    if (typeof request.body?.showOnline !== 'boolean') return reply.code(400).send(error('PRIVACY_INVALID', '在线状态隐私设置无效'))
+    return { privacy: accounts.updatePrivacy(user.id, request.body.showOnline) }
+  })
+  app.get<{ Querystring: { limit?: string } }>('/v1/me/recent-views', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return { items: accounts.recentViews(user.id, pageNumber(request.query.limit, 12)) }
+  })
+  app.post<{ Params: { id: string } }>('/v1/me/recent-views/:id', async (request, reply) => {
+    const user = requireUser(request, reply); if (user === undefined) return
+    return accounts.recordRecentView(user.id, request.params.id) ? reply.code(204).send() : reply.code(404).send(error('CATALOG_PLUGIN_NOT_PUBLIC', '插件不存在或未公开'))
+  })
   app.get('/v1/me/saved-searches', async (request, reply) => { const user = requireUser(request, reply); if (user === undefined) return; return { items: accounts.savedSearches(user.id) } })
   app.post<{ Body: { name?: unknown; query?: unknown } }>('/v1/me/saved-searches', async (request, reply) => {
     const user = requireUser(request, reply); if (user === undefined) return
@@ -446,6 +471,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       presence: { ...current, peak24h: Math.max(current.peak24h, history.peak24h), buckets: history.buckets },
     }
   })
+  app.get('/v1/admin/homepage', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; return accounts.homepage() })
   app.get<{ Querystring: PageQuery }>('/v1/admin/users', async (request, reply) => {
     if (requireAdmin(request, reply) === undefined) return
     return accounts.users({ ...(request.query.q ? { q: request.query.q } : {}), ...(request.query.role ? { role: request.query.role } : {}), ...(request.query.status ? { status: request.query.status } : {}), page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 25) })
@@ -503,6 +529,17 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       request.log.warn({ cause, pluginId: request.params.id, revisionId: request.params.revisionId }, 'changelog refresh failed')
       return reply.code(502).send(error('CHANGELOG_REFRESH_FAILED', '无法从 GitHub 重新采集更新日志'))
     }
+  })
+  app.post<{ Body: { repositories?: unknown } }>('/v1/admin/sync-repositories', async (request, reply) => {
+    const admin = requireAdmin(request, reply); if (admin === undefined) return
+    const repositories = request.body?.repositories
+    if (!Array.isArray(repositories) || repositories.length < 1 || repositories.length > 10 || !repositories.every(item => typeof item === 'string' && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(item))) return reply.code(400).send(error('SYNC_REPOSITORIES_INVALID', '请提交 1–10 个 owner/repository'))
+    const artifacts = []
+    for (const repository of [...new Set(repositories as string[])]) {
+      const verification = await sync.verifySubmission(admin.id, repository)
+      artifacts.push({ repository, status: verification.status, reason: verification.reason, items: verification.plugins.map(plugin => ({ id: plugin.id, name: plugin.name, kind: plugin.kind, verification: plugin.verification.status })) })
+    }
+    return { artifacts }
   })
   app.post('/v1/admin/sync-runs', async (request, reply) => {
     const admin = requireAdmin(request, reply); if (admin === undefined) return

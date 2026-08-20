@@ -62,7 +62,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.5', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.2.0', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -88,6 +88,32 @@ describe('marketplace account and administration API', () => {
     expect(me.json().user).toMatchObject({ username: 'normal-user', role: 'user', status: 'active' })
     const sessions = await app.inject({ method: 'GET', url: '/v1/me/sessions', headers: { cookie: userCookie } })
     expect(sessions.json().items[0]).toMatchObject({ current: true, userAgent: 'Vitest Browser' })
+  })
+
+  it('serves homepage data, presence identities, privacy controls and recent views', async () => {
+    const home = await app.inject({ method: 'GET', url: '/v1/home' })
+    expect(home.statusCode).toBe(200)
+    expect(home.json()).toMatchObject({ featured: [expect.objectContaining({ id: published.id })], popular: expect.any(Array), trending: expect.any(Array), recent: expect.any(Array), stats: { plugins: 1, collections: 0, discussions: 0 } })
+
+    const visible = await app.inject({ method: 'POST', url: '/v1/presence/heartbeat', headers: { cookie: userCookie, 'user-agent': 'Vitest Browser' }, payload: {} })
+    const presenceCookie = visible.headers['set-cookie']!.split(';', 1)[0]!
+    const authenticatedCookies = `${userCookie}; ${presenceCookie}`
+    expect(visible.json()).toMatchObject({ online: expect.any(Number), authenticated: 1, visibleUsers: [expect.objectContaining({ username: 'normal-user', role: 'user' })] })
+    expect((await app.inject({ method: 'GET', url: '/v1/me/privacy', headers: { cookie: userCookie } })).json()).toEqual({ privacy: { showOnline: true } })
+    expect((await app.inject({ method: 'PATCH', url: '/v1/me/privacy', headers: { cookie: userCookie, origin }, payload: { showOnline: false } })).json()).toEqual({ privacy: { showOnline: false } })
+    const hidden = await app.inject({ method: 'POST', url: '/v1/presence/heartbeat', headers: { cookie: authenticatedCookies, 'user-agent': 'Vitest Browser' }, payload: {} })
+    expect(hidden.json().visibleUsers).toEqual([])
+
+    expect((await app.inject({ method: 'POST', url: `/v1/me/recent-views/${encodeURIComponent(published.id)}`, headers: { cookie: userCookie, origin } })).statusCode).toBe(204)
+    expect((await app.inject({ method: 'GET', url: '/v1/me/recent-views', headers: { cookie: userCookie } })).json().items[0]).toMatchObject({ id: published.id })
+    await app.inject({ method: 'PATCH', url: '/v1/me/privacy', headers: { cookie: userCookie, origin }, payload: { showOnline: true } })
+    await app.inject({ method: 'POST', url: '/v1/presence/leave', headers: { cookie: presenceCookie } })
+  })
+
+  it('allows administrators to verify exact repositories outside topic search', async () => {
+    const response = await app.inject({ method: 'POST', url: '/v1/admin/sync-repositories', headers: { cookie: adminCookie, origin }, payload: { repositories: ['community/new-dsh-plugin'] } })
+    expect(response.statusCode).toBe(200)
+    expect(response.json().artifacts[0]).toMatchObject({ repository: 'community/new-dsh-plugin', status: 'verified', items: [expect.objectContaining({ kind: 'local-bundle' })] })
   })
 
   it('serves same-origin media, accepts catalog submissions and governs media feedback', async () => {
@@ -128,9 +154,9 @@ describe('marketplace account and administration API', () => {
     const revisions = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/revisions` })
     const platformActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=platform' })
     const pluginActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=plugin' })
-    expect(releases.json().items[0]).toMatchObject({ version: '1.1.5', title: expect.any(String), changes: expect.any(Array) })
+    expect(releases.json().items[0]).toMatchObject({ version: '1.2.0', title: expect.any(String), changes: expect.any(Array) })
     expect(revisions.json().items[0]).toMatchObject({ revisionId: expect.any(String), release: { sourceType: 'missing', summary: '作者未提供更新日志。' } })
-    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.5', changes: expect.any(Array) } })
+    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.2.0', changes: expect.any(Array) } })
     expect(pluginActivity.json().items[0]).toMatchObject({ type: 'plugin.published', payload: { release: { sourceType: 'missing' } } })
   })
 

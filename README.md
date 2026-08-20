@@ -4,7 +4,7 @@
 
 > 产品与工程基线见 `docs/01`–`10`。浏览器工坊、独立账号页与管理控制台已经部署；实现边界与运维说明见 [`docs/11-implementation.md`](docs/11-implementation.md)。
 
-当前正式版本：**v1.1.5**。该版本将 GitHub 发现从单一 `dsh-plugin` Topic 扩展为多来源检索和精确 URL 补录，新增标准 Bundle、本地 Bundle、Preset 与 Suite 的分类验证；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前正式版本：**v1.2.0**。该版本新增独立的 Steam 风格首页、在线用户名隐私控制、最近浏览与插件对比，并加强首页运营和精确仓库同步能力；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 当前结论
 

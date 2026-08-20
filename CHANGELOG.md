@@ -2,6 +2,29 @@
 
 All notable changes to DSH Creative Workshop are recorded here.
 
+## [1.2.0] - 2026-08-20
+
+### Added
+
+- A dedicated Steam-style workshop homepage with featured projects, live catalog statistics, recent browsing, trending revisions and public collections.
+- Online-presence identity previews with per-user visibility controls; hidden users remain included in the aggregate count without exposing their username.
+- Persistent recent-project history for signed-in users, local recent history for guests, and a two-to-four-project comparison workspace.
+- Homepage operations in the administration console and exact `owner/repository` synchronization for projects outside GitHub search windows.
+
+### Changed
+
+- The root route now opens the workshop homepage, while `/workshop/` is the canonical full catalog route; legacy query links remain compatible.
+- Authenticated GitHub discovery can inspect up to three result pages per query and retain up to 600 deduplicated candidates.
+
+### Fixed
+
+- Git-submodule repositories are no longer treated as DSH Suites unless their topics, name, description or components provide explicit DeepSeek Harness identity evidence.
+
+### Security
+
+- Presence responses expose only usernames that explicitly allow online visibility and deduplicate multiple browser sessions by account.
+- Exact synchronization still pins commits, validates installable structure and creates pending revisions that require administrator approval.
+
 ## [1.1.5] - 2026-08-20
 
 ### Added

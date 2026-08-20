@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { verifyGitHubRepository, verifyGitHubRepositoryDetailed } from '../src/github-catalog.ts'
+import { discoverGitHubTopic, verifyGitHubRepository, verifyGitHubRepositoryDetailed } from '../src/github-catalog.ts'
 
 const repository = {
   name: 'example-plugin', full_name: 'community/example-plugin',
@@ -23,6 +23,19 @@ function fixtureFetch(files: Record<string, string>) {
 }
 
 describe('DeepSeek Harness GitHub bundle verification', () => {
+  it('uses authenticated pagination to extend the candidate window', async () => {
+    const calls: string[] = []
+    const candidates = Array.from({ length: 100 }, (_, index) => ({ ...repository, name: `dsh-plugin-${index}`, full_name: `community/dsh-plugin-${index}` }))
+    const discovered = await discoverGitHubTopic('token', async input => {
+      const url = new URL(String(input)); calls.push(url.toString())
+      const page = Number(url.searchParams.get('page'))
+      return response({ total_count: 101, items: page === 1 ? candidates : [{ ...repository, name: 'dsh-plugin-page-two', full_name: 'community/dsh-plugin-page-two' }] })
+    })
+    expect(calls.some(url => new URL(url).searchParams.get('page') === '2')).toBe(true)
+    expect(discovered.repositories).toHaveLength(101)
+    expect(discovered.repositories.some(item => item.full_name === 'community/dsh-plugin-page-two')).toBe(true)
+  })
+
   it('rejects a repository that only carries the discovery topic', async () => {
     expect(await verifyGitHubRepository(repository, undefined, fixtureFetch({ 'package.json': JSON.stringify({ name: 'ordinary-app', dependencies: { fastify: '*' } }) }))).toBeUndefined()
   })
@@ -149,6 +162,14 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
       expect.objectContaining({ path: 'preset', role: 'preset' }),
       expect.objectContaining({ path: 'mode-boost', role: 'extension' }),
     ] })
+  })
+
+  it('does not classify an unrelated git-submodule repository as a DSH suite', async () => {
+    const result = await verifyGitHubRepositoryDetailed({ ...repository, full_name: 'community/general-monorepo', name: 'general-monorepo', description: 'A generic collection of command line tools.', topics: [] }, undefined, fixtureFetch({
+      '.gitmodules': '[submodule "alpha"]\n  path = alpha\n  url = https://github.com/community/alpha.git\n[submodule "beta"]\n  path = beta\n  url = https://github.com/community/beta.git\n',
+    }))
+    expect(result.status).toBe('rejected')
+    expect(result.plugins).toEqual([])
   })
 
   it('classifies paired DSH preset manifests without pretending they are Bundles', async () => {

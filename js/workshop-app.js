@@ -1,9 +1,14 @@
 import { api, escapeHtml, formatTime } from '/js/account-api.js';
 
+function storedIds(key, limit) {
+  try { const value = JSON.parse(localStorage.getItem(key) || '[]'); return Array.isArray(value) ? value.filter(item => typeof item === 'string').slice(0, limit) : []; }
+  catch { return []; }
+}
+
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.5',
+  version: '1.2.0',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },
@@ -13,6 +18,8 @@ const state = {
   reviewPage: 1,
   unreadNotifications: 0,
   presenceTimer: null,
+  presence: null,
+  compareIds: storedIds('dsh_compare_ids', 4),
   communityPage: 1,
   activityCategory: '',
 };
@@ -91,7 +98,7 @@ function showError(error, fallback = '操作失败，请稍后重试') {
 function installAccountUi() {
   const statusArea = document.querySelector('.steam-hero-subnav > div:last-child');
   if (statusArea && !document.getElementById('dshAccountButton')) {
-    statusArea.insertAdjacentHTML('afterbegin', '<span class="dsh-api-badge" id="dshApiBadge">● API 检测中</span><span class="dsh-presence-badge" id="dshPresenceBadge" title="过去 90 秒内有前台活动的浏览器">当前在线 —</span><button class="dsh-account-btn" id="dshAccountButton">登录 / 注册</button>');
+    statusArea.insertAdjacentHTML('afterbegin', '<span class="dsh-api-badge" id="dshApiBadge">● API 检测中</span><span class="dsh-presence-wrap"><button class="dsh-presence-badge" id="dshPresenceBadge" type="button" aria-expanded="false">当前在线 —</button><span class="dsh-presence-panel" id="dshPresencePanel" role="status"><strong>在线用户</strong><span>正在读取…</span></span></span><button class="dsh-account-btn" id="dshAccountButton">登录 / 注册</button>');
   }
   document.body.insertAdjacentHTML('beforeend', `
     <div class="dsh-dialog" id="dshDialog" role="dialog" aria-modal="true" aria-labelledby="dshDialogTitle">
@@ -105,6 +112,10 @@ function installAccountUi() {
   document.querySelector('#dshDialog .dsh-dialog-close')?.addEventListener('click', closeDialog);
   document.getElementById('dshDialog')?.addEventListener('click', event => { if (event.target.id === 'dshDialog') closeDialog(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeDialog(); });
+  document.getElementById('dshPresenceBadge')?.addEventListener('click', event => {
+    const panel = document.getElementById('dshPresencePanel'); panel?.classList.toggle('open');
+    event.currentTarget.setAttribute('aria-expanded', String(panel?.classList.contains('open')));
+  });
 }
 
 function openDialog(title, html) {
@@ -146,6 +157,13 @@ function setPresenceStatus(result) {
   if (!badge) return;
   badge.textContent = Number.isFinite(result?.online) ? `当前在线 ${result.online}` : '当前在线 —';
   badge.classList.toggle('offline', !Number.isFinite(result?.online));
+  const homeCount = document.getElementById('dshHomePresenceCount');
+  if (homeCount) homeCount.textContent = formatNumber(Number(result?.online || 0));
+  state.presence = result;
+  const panel = document.getElementById('dshPresencePanel');
+  if (!panel) return;
+  const users = result?.visibleUsers || [];
+  panel.innerHTML = `<strong>${Number(result?.online || 0)} 人在线</strong><small>${Number(result?.authenticated || 0)} 名登录用户 · ${Number(result?.guests || 0)} 名访客</small>${users.length ? `<ul>${users.map(user => `<li><span>${escapeHtml(user.username)}</span><em>${user.role === 'admin' ? '管理员' : '用户'}</em></li>`).join('')}</ul>` : '<span>当前在线用户均为访客或选择了隐身。</span>'}`;
 }
 
 async function heartbeatPresence() {
@@ -165,7 +183,8 @@ function startPresence() {
 }
 
 function wireHeader() {
-  document.querySelectorAll('.js-nav-home, .steam-hub-nav-item[data-tab="workshop"], .steam-hub-nav-item[data-tab="all"]').forEach(node => node.addEventListener('click', () => navigateCatalog(true)));
+  document.querySelectorAll('.js-nav-home, .steam-hub-nav-item[data-tab="all"], .steam-game-title').forEach(node => node.addEventListener('click', () => renderHome(true)));
+  document.querySelector('.steam-hub-nav-item[data-tab="workshop"]')?.addEventListener('click', () => navigateCatalog(true));
   document.querySelector('.js-nav-about')?.addEventListener('click', () => renderAbout(true));
   document.querySelectorAll('.js-nav-discussions, .steam-hub-nav-item[data-tab="discussions"]').forEach(node => node.addEventListener('click', () => renderDiscussions(true)));
   document.querySelector('.steam-hub-nav-item[data-tab="news"]')?.addEventListener('click', () => renderActivity(true));
@@ -218,7 +237,7 @@ function catalogQuery() {
 
 function syncCatalogUrl(push = false) {
   const query = catalogQuery().toString();
-  const url = `/${query ? `?${query}` : ''}`;
+  const url = `/workshop/${query ? `?${query}` : ''}`;
   history[push ? 'pushState' : 'replaceState']({}, '', url);
 }
 
@@ -250,6 +269,7 @@ function cardHtml(plugin) {
       <div class="dsh-card-cover">
         <img src="${attribute(coverUrl(plugin))}" alt="${attribute(plugin.name)} 封面" loading="lazy" data-cover-fallback>
         <div class="dsh-card-actions">
+          <button class="dsh-icon-button ${state.compareIds.includes(plugin.id) ? 'active' : ''}" data-action="compare" type="button" title="加入对比" aria-label="加入对比">⇄</button>
           <button class="dsh-icon-button favorite ${favorited ? 'active' : ''}" data-action="favorite" type="button" title="${favorited ? '取消收藏' : '收藏'}" aria-label="${favorited ? '取消收藏' : '收藏'}">${icons.heart}</button>
           <button class="dsh-icon-button ${subscribed ? 'active' : ''}" data-action="subscribe" type="button" title="${subscribed ? '取消订阅' : '订阅更新'}" aria-label="${subscribed ? '取消订阅' : '订阅更新'}">${subscribed ? icons.check : icons.plus}</button>
         </div>
@@ -263,6 +283,48 @@ function cardHtml(plugin) {
         <div class="dsh-chip-row">${(plugin.surfaces || []).slice(0, 3).map(value => `<span class="dsh-chip neutral">${escapeHtml(value)}</span>`).join('')}</div>
       </div>
     </article>`;
+}
+
+function homeRow(title, subtitle, items, key) {
+  return `<section class="dsh-home-section"><header><div><p class="dsh-kicker">${escapeHtml(key)}</p><h2>${escapeHtml(title)}</h2><p>${escapeHtml(subtitle)}</p></div><button class="dsh-button" data-home-open-catalog type="button">查看全部</button></header><div class="dsh-home-row">${items.length ? items.map(cardHtml).join('') : '<div class="dsh-empty">当前暂无内容。</div>'}</div></section>`;
+}
+
+async function renderHome(push = false) {
+  if (push) history.pushState({}, '', '/');
+  activateHub('all');
+  main.innerHTML = '<div class="dsh-loading">正在装载工坊首页…</div>';
+  try {
+    const home = await api('/home');
+    let recentViews = [];
+    if (state.user) {
+      try { recentViews = (await api('/me/recent-views?limit=8')).items; } catch { recentViews = []; }
+    } else {
+      const ids = storedIds('dsh_recent_views', 8);
+      recentViews = (await Promise.all(ids.map(id => api(`/plugins/${encodeURIComponent(id)}`).then(result => result.plugin).catch(() => null)))).filter(Boolean);
+    }
+    const allItems = [...home.featured, ...home.popular, ...home.trending, ...home.recent, ...recentViews];
+    state.items = [...new Map(allItems.map(item => [item.id, item])).values()];
+    const hero = home.featured[0] || home.popular[0];
+    main.innerHTML = `<div class="dsh-home">
+      ${hero ? `<section class="dsh-home-hero"><img src="${attribute(coverUrl(hero))}" alt="${attribute(hero.name)} 封面" data-cover-fallback><div class="dsh-home-hero-copy"><p class="dsh-kicker">FEATURED WORKSHOP ITEM</p><h1>${escapeHtml(hero.name)}</h1><p>${escapeHtml(hero.description)}</p><div class="dsh-chip-row"><span class="dsh-chip neutral">${escapeHtml(hero.kind)}</span><span class="dsh-chip neutral">★ ${formatNumber(hero.stars)}</span><span class="dsh-chip neutral">${formatNumber(hero.community?.subscriptionCount)} 订阅</span></div><div class="dsh-detail-actions"><button class="dsh-button primary" data-home-plugin="${attribute(hero.id)}">查看详情</button><button class="dsh-button" data-home-open-catalog>进入创意工坊</button></div></div></section>` : ''}
+      <section class="dsh-home-stats"><article><strong>${formatNumber(home.stats.plugins)}</strong><span>公开项目</span></article><article><strong>${formatNumber(home.stats.collections)}</strong><span>社区合集</span></article><article><strong>${formatNumber(home.stats.discussions)}</strong><span>公开讨论</span></article><article><strong id="dshHomePresenceCount">${formatNumber(state.presence?.online || 0)}</strong><span>当前在线</span></article></section>
+      ${recentViews.length ? homeRow('继续浏览', '回到你最近查看的项目。', recentViews, 'CONTINUE BROWSING') : ''}
+      ${homeRow('今日精选', '由管理员精选标记与社区热度共同组成。', home.featured, 'FEATURED')}
+      ${homeRow('热门与趋势', '依据真实订阅和当前 Revision 评价排序。', home.trending, 'TRENDING')}
+      ${homeRow('最近更新', '按 GitHub 推送与工坊公开时间展示。', home.recent, 'RECENTLY UPDATED')}
+      <section class="dsh-home-section"><header><div><p class="dsh-kicker">COMMUNITY COLLECTIONS</p><h2>热门合集</h2><p>社区整理的可复制插件组合。</p></div><button class="dsh-button" id="homeCollections">合集广场</button></header><div class="dsh-collection-grid">${home.collections.map(collection => `<article class="dsh-collection-card" data-home-collection="${attribute(collection.id)}" tabindex="0"><p class="dsh-kicker">${escapeHtml(collection.ownerName || '社区用户')}</p><h3>${escapeHtml(collection.name)}</h3><p>${escapeHtml(collection.description || '未填写说明')}</p><footer><span>${collection.plugins.length} 个插件</span><span>${formatTime(collection.updatedAt)}</span></footer></article>`).join('') || '<div class="dsh-empty">暂无公开合集。</div>'}</div></section>
+    </div>`;
+    wireMediaFallbacks(main);
+    main.querySelectorAll('.dsh-card').forEach(card => card.addEventListener('click', event => handleCardClick(event, card)));
+    main.querySelectorAll('.dsh-card').forEach(card => card.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); handleCardClick(event, card); } }));
+    main.querySelectorAll('[data-home-open-catalog]').forEach(button => button.addEventListener('click', () => navigateCatalog(true)));
+    main.querySelectorAll('[data-home-plugin]').forEach(button => button.addEventListener('click', () => navigatePlugin(button.dataset.homePlugin)));
+    main.querySelectorAll('[data-home-collection]').forEach(card => card.addEventListener('click', () => renderPublicCollectionDetail(card.dataset.homeCollection, true)));
+    main.querySelectorAll('[data-home-collection]').forEach(card => card.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); renderPublicCollectionDetail(card.dataset.homeCollection, true); } }));
+    document.getElementById('homeCollections')?.addEventListener('click', () => renderPublicCollections(true));
+    document.title = '首页 · DSH Creative Workshop';
+    renderCompareTray();
+  } catch (error) { main.innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}<br><button class="dsh-button" id="homeFallback">进入创意工坊</button></div>`; document.getElementById('homeFallback')?.addEventListener('click', () => navigateCatalog(true)); }
 }
 
 function catalogHtml(result) {
@@ -356,6 +418,7 @@ async function handleCardClick(event, card) {
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (!action) return navigatePlugin(card.dataset.pluginId);
   event.stopPropagation();
+  if (action === 'compare') return toggleCompare(card.dataset.pluginId);
   if (!state.user) return goLogin();
   try {
     const result = await api(`/me/${action === 'favorite' ? 'favorites' : 'subscriptions'}/${encodeURIComponent(card.dataset.pluginId)}/toggle`, { method: 'POST' });
@@ -364,6 +427,39 @@ async function handleCardClick(event, card) {
     updateIdentity();
     await loadCatalog();
   } catch (error) { showError(error); }
+}
+
+function toggleCompare(pluginId) {
+  const index = state.compareIds.indexOf(pluginId);
+  if (index >= 0) state.compareIds.splice(index, 1);
+  else if (state.compareIds.length >= 4) return toast('最多同时对比 4 个项目。');
+  else state.compareIds.push(pluginId);
+  localStorage.setItem('dsh_compare_ids', JSON.stringify(state.compareIds));
+  renderCompareTray();
+  document.querySelectorAll(`[data-plugin-id="${CSS.escape(pluginId)}"] [data-action="compare"]`).forEach(button => button.classList.toggle('active', state.compareIds.includes(pluginId)));
+}
+
+function renderCompareTray() {
+  document.getElementById('dshCompareTray')?.remove();
+  if (!state.compareIds.length) return;
+  document.body.insertAdjacentHTML('beforeend', `<aside class="dsh-compare-tray" id="dshCompareTray"><span>已选择 ${state.compareIds.length} / 4 个项目</span><button class="dsh-button primary" id="openCompare" ${state.compareIds.length < 2 ? 'disabled' : ''}>开始对比</button><button class="dsh-button" id="clearCompare">清空</button></aside>`);
+  document.getElementById('clearCompare').addEventListener('click', () => { state.compareIds = []; localStorage.removeItem('dsh_compare_ids'); renderCompareTray(); document.querySelectorAll('[data-action="compare"]').forEach(button => button.classList.remove('active')); });
+  document.getElementById('openCompare').addEventListener('click', openCompare);
+}
+
+async function openCompare() {
+  openDialog('插件对比', '<div class="dsh-loading">正在读取对比项目…</div>');
+  try {
+    const plugins = await Promise.all(state.compareIds.map(id => api(`/plugins/${encodeURIComponent(id)}`).then(result => result.plugin)));
+    const rows = [
+      ['类型', plugin => plugin.kind], ['作者', plugin => plugin.author], ['运行表面', plugin => (plugin.surfaces || []).join(' / ')],
+      ['Stars', plugin => formatNumber(plugin.stars)], ['订阅', plugin => formatNumber(plugin.community?.subscriptionCount)],
+      ['评分', plugin => plugin.community?.reviewScore ? Number(plugin.community.reviewScore).toFixed(1) : '暂无'],
+      ['许可证', plugin => plugin.license || '未声明'], ['验证类型', plugin => plugin.verification?.status],
+      ['依赖数量', plugin => String((plugin.declaredDependencies || []).length)],
+    ];
+    document.getElementById('dshDialogBody').innerHTML = `<div class="dsh-compare-table-wrap"><table class="dsh-compare-table"><thead><tr><th>项目</th>${plugins.map(plugin => `<th>${escapeHtml(plugin.name)}<small>${escapeHtml(plugin.fullName)}</small></th>`).join('')}</tr></thead><tbody>${rows.map(([label, value]) => `<tr><th>${label}</th>${plugins.map(plugin => `<td>${escapeHtml(value(plugin) || '—')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  } catch (error) { document.getElementById('dshDialogBody').innerHTML = `<div class="dsh-error">${escapeHtml(error.message)}</div>`; }
 }
 
 function showPopover(pluginId, card) {
@@ -497,6 +593,11 @@ async function renderPlugin(id) {
     const [pluginResult, reviews, revisionResult, relatedResult, userState] = await Promise.all(requests);
     const plugin = pluginResult.plugin;
     state.currentPlugin = plugin;
+    if (state.user) api(`/me/recent-views/${encodeURIComponent(plugin.id)}`, { method: 'POST' }).catch(() => {});
+    else {
+      const recent = storedIds('dsh_recent_views', 20).filter(value => value !== plugin.id);
+      localStorage.setItem('dsh_recent_views', JSON.stringify([plugin.id, ...recent].slice(0, 20)));
+    }
     main.innerHTML = detailHtml(plugin, reviews, userState?.state || null, revisionResult.items, relatedResult.items);
     wireMediaFallbacks(main);
     wireDetail(plugin, userState?.state || null);
@@ -554,7 +655,7 @@ async function toggleDetailRelation(relation, pluginId) {
 }
 
 function accountNav(view) {
-  const items = [['overview','概览'],['profile','账号名'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['searches','保存搜索'],['collections','合集'],['submissions','项目补录'],['sessions','设备会话'],['security','安全']];
+  const items = [['overview','概览'],['profile','账号名'],['privacy','隐私'],['notifications',`通知${state.unreadNotifications ? ` ${state.unreadNotifications}` : ''}`],['favorites','收藏'],['subscriptions','订阅'],['searches','保存搜索'],['collections','合集'],['submissions','项目补录'],['sessions','设备会话'],['security','安全']];
   return `<nav class="dsh-account-nav">${items.map(([id,label]) => `<button class="dsh-button ${id === view ? 'active' : ''}" data-account-view="${id}" type="button">${label}</button>`).join('')}</nav>`;
 }
 
@@ -575,6 +676,7 @@ async function renderAccount(view) {
   try {
     if (view === 'overview') renderAccountOverview(body, view);
     else if (view === 'profile') await renderProfile(body);
+    else if (view === 'privacy') await renderPrivacy(body);
     else if (view === 'notifications') await renderNotifications(body);
     else if (view === 'favorites' || view === 'subscriptions') await renderRelations(body, view);
     else if (view === 'searches') await renderSavedSearches(body);
@@ -617,6 +719,13 @@ async function renderSavedSearches(body) {
     closeDialog(); navigateCatalog(true);
   }));
   body.querySelectorAll('[data-delete-search]').forEach(button => button.addEventListener('click', async () => { try { await api(`/me/saved-searches/${encodeURIComponent(button.dataset.deleteSearch)}`, { method: 'DELETE' }); await renderSavedSearches(body); } catch (error) { showError(error); } }));
+}
+
+async function renderPrivacy(body) {
+  const { privacy } = await api('/me/privacy');
+  body.innerHTML = `${accountNav('privacy')}<section class="dsh-panel"><h2>在线状态</h2><p class="dsh-section-copy">关闭后你仍计入在线人数，但用户名不会出现在在线用户 Hover 面板中。</p><form id="privacyForm" class="dsh-preference-grid"><label><input type="checkbox" name="showOnline" ${privacy.showOnline ? 'checked' : ''}>公开显示我的在线用户名</label><button class="dsh-button primary" type="submit">保存隐私设置</button></form></section>`;
+  wireAccountNav();
+  document.getElementById('privacyForm')?.addEventListener('submit', async event => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api('/me/privacy', { method: 'PATCH', body: JSON.stringify({ showOnline: data.has('showOnline') }) }); toast('在线状态隐私设置已保存。'); heartbeatPresence(); } catch (error) { showError(error); } });
 }
 
 async function renderSubmissions(body) {
@@ -937,15 +1046,16 @@ function route() {
   if (location.pathname.startsWith('/discussion/')) { const id = new URLSearchParams(location.search).get('id'); return id ? renderDiscussionDetail(id, false) : renderDiscussions(false); }
   if (location.pathname.startsWith('/collection/')) { const id = new URLSearchParams(location.search).get('id'); return id ? renderPublicCollectionDetail(id, false) : renderPublicCollections(false); }
   if (location.pathname.startsWith('/collections/')) return renderPublicCollections(false);
+  if (location.pathname.startsWith('/workshop/')) { state.filters = filtersFromUrl(); activateHub('workshop'); return loadCatalog(); }
   const view = new URLSearchParams(location.search).get('view');
   if (view === 'about') return renderAbout(false);
   if (view === 'discussions') return renderDiscussions(false, new URLSearchParams(location.search).get('pluginId'));
   if (view === 'reviews') return renderGlobalReviews(false);
   if (view === 'activity') return renderActivity(false);
   if (view === 'screenshots') return renderMediaGallery(false);
-  state.filters = filtersFromUrl();
-  activateHub('workshop');
-  return loadCatalog();
+  const params = new URLSearchParams(location.search);
+  if (['q','kind','surface','topic','author','language','license','sort','page'].some(key => params.has(key))) { state.filters = filtersFromUrl(); activateHub('workshop'); return loadCatalog(); }
+  return renderHome(false);
 }
 
 async function init() {
@@ -953,6 +1063,7 @@ async function init() {
   wireHeader();
   await loadSessionAndVersion();
   startPresence();
+  renderCompareTray();
   await route();
   window.addEventListener('popstate', route);
 }

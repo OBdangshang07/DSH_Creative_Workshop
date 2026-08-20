@@ -291,6 +291,13 @@ function submoduleComponents(text: string) {
   return components.slice(0, 12)
 }
 
+function suiteHasDshIdentity(repository: GitHubRepository, components: Array<{ repository: string }>): boolean {
+  const topics = Array.isArray(repository.topics) ? repository.topics.filter((topic): topic is string => typeof topic === 'string') : []
+  if (topics.some(topic => ['dsh-plugin', 'deepseek-harness', 'dsh-bundle'].includes(topic.toLowerCase()))) return true
+  const evidence = `${repository.full_name ?? ''} ${repository.description ?? ''} ${components.map(component => component.repository).join(' ')}`
+  return /(^|[/\s_.-])(?:deepseek[\s_.-]?harness|dsh)(?:[/\s_.-]|$)/i.test(evidence)
+}
+
 function kindFor(manifest: PackageManifest, patchText: string): string {
   if (manifest.dsh?.client?.platform === 'web') return 'web-ui'
   if (/\btui\b|terminal/i.test(patchText)) return 'tui'
@@ -315,24 +322,28 @@ export async function discoverGitHubTopic(token?: string, fetcher: Fetcher = fet
   let latestRateLimit: { remaining?: number; resetAt?: string } = {}
   for (const query of discoveryQueries) {
     for (const sort of ['updated', 'stars']) {
-      const url = new URL('https://api.github.com/search/repositories')
-      url.searchParams.set('q', query)
-      url.searchParams.set('sort', sort); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100')
-      const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
-      if (!response.ok) {
-        if (resultSets.length === 0) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
-        continue
+      for (let pageNumber = 1; pageNumber <= (token === undefined ? 1 : 3); pageNumber += 1) {
+        const url = new URL('https://api.github.com/search/repositories')
+        url.searchParams.set('q', query)
+        url.searchParams.set('sort', sort); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100'); url.searchParams.set('page', String(pageNumber))
+        const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
+        if (!response.ok) {
+          if (resultSets.length === 0) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
+          break
+        }
+        const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
+        const items = body.items ?? []
+        resultSets.push(items.filter(validCandidate))
+        totalCount = Math.max(totalCount, Number(body.total_count ?? 0))
+        latestRateLimit = rateLimit(response)
+        if (items.length < 100) break
       }
-      const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
-      resultSets.push((body.items ?? []).filter(validCandidate))
-      totalCount = Math.max(totalCount, Number(body.total_count ?? 0))
-      latestRateLimit = rateLimit(response)
     }
   }
   const repositories: GitHubRepository[] = []
   const seen = new Set<string>()
   const longest = Math.max(0, ...resultSets.map(items => items.length))
-  for (let index = 0; index < longest && repositories.length < 300; index += 1) {
+  for (let index = 0; index < longest && repositories.length < 600; index += 1) {
     for (const items of resultSets) {
       const repository = items[index]
       if (repository === undefined || typeof repository.full_name !== 'string' || seen.has(repository.full_name.toLowerCase())) continue
@@ -485,7 +496,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
   if (gitmodulesPath !== undefined) {
     const gitmodules = await cachedText(gitmodulesPath)
     const components = gitmodules === undefined ? [] : submoduleComponents(gitmodules)
-    if (components.length >= 2) plugins.push({
+    if (components.length >= 2 && suiteHasDshIdentity(repository, components)) plugins.push({
       id: artifactId(fullName, 'suite'), fullName,
       name: typeof repository.name === 'string' ? repository.name : fullName.split('/')[1]!,
       packageName: `suite:${fullName.toLowerCase()}`, packagePath: '.',

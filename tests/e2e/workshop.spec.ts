@@ -14,7 +14,7 @@ async function login(page: import('@playwright/test').Page, identity = 'browser-
 }
 
 test('card opens an internal, reload-safe detail page with an explicit GitHub handoff', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/workshop/')
   const card = page.locator('.dsh-card').first()
   await expect(card).toBeVisible()
   await expect(card.locator('img')).toHaveAttribute('src', /\/api\/v1\/plugins\/.+\/cover\.svg/)
@@ -33,11 +33,11 @@ test('card opens an internal, reload-safe detail page with an explicit GitHub ha
   await page.reload()
   await expect(page.locator('.dsh-detail-summary h1')).toHaveText(title || '')
   await page.goBack()
-  await expect(page).toHaveURL(/127\.0\.0\.1:4273\/$/)
+  await expect(page).toHaveURL(/127\.0\.0\.1:4273\/workshop\/$/)
 })
 
 test('login returns to the plugin and enables persisted user actions', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/workshop/')
   await page.locator('.dsh-card').first().click()
   const detailUrl = page.url()
   await page.getByRole('button', { name: /^收藏$/ }).click()
@@ -64,7 +64,7 @@ test('login returns to the plugin and enables persisted user actions', async ({ 
 })
 
 test('catalog search and real facets are reflected in the URL', async ({ page }) => {
-  await page.goto('/')
+  await page.goto('/workshop/')
   const firstTitle = await page.locator('.dsh-card-title').first().textContent()
   await page.locator('input[name="q"]').fill(firstTitle || '')
   await page.getByRole('button', { name: '应用筛选' }).click()
@@ -77,7 +77,7 @@ test('catalog search and real facets are reflected in the URL', async ({ page })
 
 test('catalog and detail remain usable on a narrow mobile viewport', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
-  await page.goto('/')
+  await page.goto('/workshop/')
   await expect(page.locator('.dsh-card').first()).toBeVisible()
   await page.locator('.dsh-card').first().click()
   await expect(page.getByRole('link', { name: /前往 GitHub/ })).toBeVisible()
@@ -98,8 +98,8 @@ test('activity filters expose platform and plugin release-note snapshots', async
   await page.goto('/?view=activity')
   await expect(page.getByRole('heading', { name: '更新动态' })).toBeVisible()
   await page.getByRole('button', { name: '平台更新' }).click()
-  await expect(page.locator('.dsh-activity-list')).toContainText('DSH Creative Workshop v1.1.5')
-  await expect(page.locator('.dsh-activity-item details')).toContainText('扩展发现与组合型产物')
+  await expect(page.locator('.dsh-activity-list')).toContainText('DSH Creative Workshop v1.2.0')
+  await expect(page.locator('.dsh-activity-item details')).toContainText('工坊首页与社区在线状态')
   await page.getByRole('button', { name: '插件更新' }).click()
   await expect(page.locator('.dsh-activity-item').first()).toContainText('traceable browser-test release')
 })
@@ -116,10 +116,21 @@ test('a user can change their username with password verification', async ({ pag
 })
 
 test('homepage shows live presence and a signed-in user can publish discussions', async ({ page }) => {
+  await page.route('**/api/v1/presence/heartbeat', route => route.continue({ headers: { ...route.request().headers(), 'user-agent': 'Mozilla/5.0 DSH-E2E-Browser' } }))
   await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('heading', { name: /今日精选|热门合集/ }).first()).toBeVisible()
   await expect(page.locator('#dshPresenceBadge')).toHaveText(/当前在线 \d+/)
+  await expect(page.locator('#dshHomePresenceCount')).toHaveText(/\d+/)
+
+  await page.locator('.steam-hub-nav-item[data-tab="workshop"]').click()
+  await expect(page).toHaveURL(/\/workshop\/$/)
+  await expect(page.locator('.dsh-card').first()).toBeVisible()
+  await page.locator('.steam-hub-nav-item[data-tab="all"]').click()
+  await expect(page).toHaveURL(/127\.0\.0\.1:4273\/$/)
 
   await login(page)
+  await page.locator('#dshPresenceBadge').click()
+  await expect(page.locator('#dshPresencePanel')).toContainText('browser-user')
   await page.goto('/?view=discussions')
   await page.locator('#discussionForm input[name="title"]').fill('浏览器端社区讨论验证')
   await page.locator('#discussionForm textarea[name="body"]').fill('这是一条通过真实浏览器流程创建并可在刷新后读取的讨论内容。')
@@ -151,6 +162,17 @@ test('a user can publish a collection, discover it in the square and clone it', 
   await expect(page.locator('.dsh-toast')).toContainText('已复制为你的私有合集')
 })
 
+test('catalog cards can be selected for a backend-backed comparison', async ({ page }) => {
+  await page.goto('/workshop/')
+  const cards = page.locator('.dsh-card')
+  await cards.nth(0).getByRole('button', { name: '加入对比' }).click()
+  await cards.nth(1).getByRole('button', { name: '加入对比' }).click()
+  await expect(page.locator('#dshCompareTray')).toContainText('已选择 2 / 4 个项目')
+  await page.getByRole('button', { name: '开始对比' }).click()
+  await expect(page.locator('.dsh-compare-table')).toBeVisible()
+  await expect(page.locator('.dsh-compare-table tbody')).toContainText('验证类型')
+})
+
 test('a signed-in user can submit a GitHub repository for catalog review', async ({ page }) => {
   await login(page)
   await page.locator('#dshAccountButton').click()
@@ -165,6 +187,8 @@ test('administrator overview and community governance are available on desktop a
   await login(page, 'browser-admin', 'BrowserAdminPassword123', '/admin/')
   await expect(page.getByRole('heading', { name: '运行总览' })).toBeVisible()
   await expect(page.locator('.presence-stat')).toContainText('当前在线')
+  await page.locator('[data-view="homepage"]').click()
+  await expect(page.getByRole('heading', { name: '首页精选' })).toBeVisible()
   await page.locator('[data-view="media"]').click()
   await expect(page.getByRole('heading', { name: '媒体健康' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'GitHub 项目补录' })).toBeVisible()
