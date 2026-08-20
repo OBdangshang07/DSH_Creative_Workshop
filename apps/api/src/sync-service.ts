@@ -1,5 +1,5 @@
 import type { AccountStore, SyncRun } from './auth-store.js'
-import { fetchGitHubTopicDetailed, type Fetcher } from './github-catalog.js'
+import { fetchGitHubTopicDetailed, verifyExactGitHubRepositoryDetailed, type Fetcher, type RepositoryVerificationResult } from './github-catalog.js'
 
 export class CatalogSyncService {
   private running = false
@@ -21,6 +21,18 @@ export class CatalogSyncService {
     const run = this.store.createSyncRun(actorId, retryOf, context)
     this.schedule(run)
     return run
+  }
+
+  async verifySubmission(actorId: string, repository: string): Promise<RepositoryVerificationResult> {
+    if (this.running) throw new Error('SYNC_ALREADY_RUNNING')
+    this.running = true
+    try {
+      const result = await verifyExactGitHubRepositoryDetailed(repository, this.githubToken, this.fetcher)
+      if (result.status === 'verified') await this.store.ingestVerifiedPlugins(actorId, result.plugins)
+      return result
+    } finally {
+      this.running = false
+    }
   }
 
   private schedule(run: SyncRun): void {

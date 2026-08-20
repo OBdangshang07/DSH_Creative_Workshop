@@ -4,7 +4,7 @@
 
 > 产品与工程基线见 `docs/01`–`10`。浏览器工坊、独立账号页与管理控制台已经部署；实现边界与运维说明见 [`docs/11-implementation.md`](docs/11-implementation.md)。
 
-当前正式版本：**v1.1.4**。该版本将插件封面改为同源、可降级的确定性输出，新增项目媒体、相关插件、GitHub 项目补录和管理端媒体治理，并排除私有模板与重复包路径；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
+当前正式版本：**v1.1.5**。该版本将 GitHub 发现从单一 `dsh-plugin` Topic 扩展为多来源检索和精确 URL 补录，新增标准 Bundle、本地 Bundle、Preset 与 Suite 的分类验证；发布记录见 [`CHANGELOG.md`](CHANGELOG.md)。
 
 ## 当前结论
 

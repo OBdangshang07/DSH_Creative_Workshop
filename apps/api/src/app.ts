@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify'
 import { AccountStore, publicUser, type BootstrapAdmin, type CatalogQuery, type ModerationStatus, type NotificationPreferences, type RevisionChangeItem, type UserRole, type UserStatus } from './auth-store.js'
 import { githubSeed } from './github-seed.js'
-import { collectGitHubReleaseNotes } from './github-catalog.js'
+import { collectGitHubReleaseNotes, type Fetcher } from './github-catalog.js'
 import { CatalogSyncService } from './sync-service.js'
 import { APP_VERSION } from './version.js'
 import { PresenceService } from './presence-service.js'
@@ -17,6 +17,7 @@ interface ApiOptions {
   legacyDataFile?: string
   bootstrapAdmin?: BootstrapAdmin
   githubToken?: string
+  githubFetcher?: Fetcher
   logger?: boolean
   presenceService?: PresenceService
   mediaDirectory?: string
@@ -56,7 +57,7 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
   const accounts = options.accountStore ?? new AccountStore(options.dataFile, options.legacyDataFile)
   await accounts.initialize(options.bootstrapAdmin, githubSeed)
   accounts.publishWorkshopRelease(await loadWorkshopRelease())
-  const sync = new CatalogSyncService(accounts, options.githubToken)
+  const sync = new CatalogSyncService(accounts, options.githubToken, options.githubFetcher)
   const presence = options.presenceService ?? new PresenceService()
   const media = new MediaService(accounts,{...(options.mediaDirectory===undefined?{}:{directory:options.mediaDirectory}),...(options.mediaFetcher===undefined?{}:{fetcher:options.mediaFetcher})})
   await media.initialize()
@@ -140,8 +141,9 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
       page: pageNumber(request.query.page, 1), pageSize: pageNumber(request.query.pageSize, 100),
     })
     return {
-      source: 'https://github.com/topics/dsh-plugin',
-      verificationNotice: '仅展示已验证包含 dsh.bundle.patch 且引用的 Cordis patch 存在并可解析的 DeepSeek Harness Bundle。',
+      source: 'GitHub 多来源发现与用户精确补录',
+      sources: ['dsh-plugin', 'deepseek-harness', 'dsh-bundle', '仓库名称/描述检索', '用户提交的精确 GitHub URL'],
+      verificationNotice: '仅展示已验证的标准 dsh.bundle.patch Bundle、本地 Bundle、Preset 或 Suite；精确补录仍需结构验证和管理员审核。',
       securityNotice: '结构验证不代表 DeepSeek 官方认证或安全审计，安装前仍需检查源码与权限。',
       ...snapshot,
     }
@@ -541,8 +543,22 @@ export async function buildApi(options: ApiOptions = {}): Promise<FastifyInstanc
     const { status, note } = request.body ?? {}
     if (!['pending','accepted','rejected'].includes(String(status)) || (note !== undefined && (typeof note !== 'string' || note.length > 500))) return reply.code(400).send(error('PLUGIN_SUBMISSION_MODERATION_INVALID', '补录审核参数无效'))
     if (status === 'rejected' && (typeof note !== 'string' || note.trim().length < 3)) return reply.code(400).send(error('PLUGIN_SUBMISSION_NOTE_REQUIRED', '拒绝时请填写原因'))
-    const submission = accounts.moderatePluginSubmission(admin.id, request.params.id, status as 'pending' | 'accepted' | 'rejected', typeof note === 'string' ? note.trim() : undefined, context(request))
-    return submission === undefined ? reply.code(404).send(error('PLUGIN_SUBMISSION_NOT_FOUND', '补录记录不存在')) : { submission }
+    const current = accounts.pluginSubmission(request.params.id)
+    if (current === undefined) return reply.code(404).send(error('PLUGIN_SUBMISSION_NOT_FOUND', '补录记录不存在'))
+    let verification
+    if (status === 'accepted') {
+      try { verification = await sync.verifySubmission(admin.id, current.repositoryFullName) }
+      catch (cause) {
+        if (cause instanceof Error && cause.message === 'SYNC_ALREADY_RUNNING') return reply.code(409).send(error('SYNC_ALREADY_RUNNING', '目录同步进行中，请稍后重试精确验证'))
+        throw cause
+      }
+      if (verification.status !== 'verified' || verification.plugins.length === 0) return reply.code(422).send(error(
+        'PLUGIN_SUBMISSION_VERIFICATION_FAILED', '仓库未通过工坊结构验证', { status: verification.status, reason: verification.reason, evidence: verification.evidence },
+      ))
+    }
+    const moderationNote = typeof note === 'string' && note.trim() !== '' ? note.trim() : verification === undefined ? undefined : `精确验证通过，收录 ${verification.plugins.length} 个工坊项目。`
+    const submission = accounts.moderatePluginSubmission(admin.id, request.params.id, status as 'pending' | 'accepted' | 'rejected', moderationNote, context(request))
+    return { submission, ...(verification === undefined ? {} : { verification: { status: verification.status, artifacts: verification.plugins.map(plugin => ({ id: plugin.id, name: plugin.name, kind: plugin.kind, verificationStatus: plugin.verification.status })) } }) }
   })
   app.get<{ Params: { id: string } }>('/v1/admin/sync-runs/:id', async (request, reply) => { if (requireAdmin(request, reply) === undefined) return; const run = accounts.syncRun(request.params.id); return run ?? reply.code(404).send(error('SYNC_RUN_NOT_FOUND', '同步任务不存在')) })
   app.post<{ Params: { id: string } }>('/v1/admin/sync-runs/:id/retry', async (request, reply) => {

@@ -3,7 +3,7 @@ import { api, escapeHtml, formatTime } from '/js/account-api.js';
 const main = document.getElementById('steamAppMain');
 const state = {
   user: null,
-  version: '1.1.4',
+  version: '1.1.5',
   items: [],
   facets: { kinds: [], surfaces: [], topics: [], authors: [], languages: [], licenses: [] },
   filters: { q: '', kind: '', surface: '', topic: '', author: '', language: '', license: '', sort: 'stars', page: 1 },
@@ -622,7 +622,7 @@ async function renderSavedSearches(body) {
 async function renderSubmissions(body) {
   const result = await api('/me/plugin-submissions');
   const labels = { pending: '待审核', accepted: '已接收', rejected: '已拒绝' };
-  body.innerHTML = `${accountNav('submissions')}<section class="dsh-panel"><h2>补录 GitHub 项目</h2><p class="dsh-section-copy">请提交仓库首页。仓库需设置 <code>dsh-plugin</code> Topic，并包含可验证的 DSH Bundle 与 Cordis patch；审核通过不等于安全背书。</p><form class="dsh-form-grid" id="pluginSubmissionForm"><label class="dsh-field wide">GitHub 仓库地址<input name="repositoryUrl" type="url" placeholder="https://github.com/owner/repository" required></label><button class="dsh-button primary" type="submit">提交补录</button></form><p class="dsh-message" id="pluginSubmissionMessage"></p></section><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item"><div><h3>${escapeHtml(item.repositoryFullName)}</h3><p>${escapeHtml(labels[item.status] || item.status)} · ${formatTime(item.updatedAt)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</p></div><a class="dsh-button" href="${attribute(safeExternalUrl(item.repositoryUrl))}" target="_blank" rel="noopener noreferrer">查看仓库</a></div>`).join('') : '<div class="dsh-empty">尚未提交项目补录。</div>'}</div>`;
+  body.innerHTML = `${accountNav('submissions')}<section class="dsh-panel"><h2>补录 GitHub 项目</h2><p class="dsh-section-copy">请提交仓库首页。系统会精确读取仓库并验证标准 Bundle、本地 Bundle、Preset 或 Suite 结构；<code>dsh-plugin</code> Topic 可提高自动发现率，但不是补录前提。结构验证不等于安全背书。</p><form class="dsh-form-grid" id="pluginSubmissionForm"><label class="dsh-field wide">GitHub 仓库地址<input name="repositoryUrl" type="url" placeholder="https://github.com/owner/repository" required></label><button class="dsh-button primary" type="submit">提交补录</button></form><p class="dsh-message" id="pluginSubmissionMessage"></p></section><div class="dsh-list">${result.items.length ? result.items.map(item => `<div class="dsh-list-item"><div><h3>${escapeHtml(item.repositoryFullName)}</h3><p>${escapeHtml(labels[item.status] || item.status)} · ${formatTime(item.updatedAt)}${item.note ? ` · ${escapeHtml(item.note)}` : ''}</p></div><a class="dsh-button" href="${attribute(safeExternalUrl(item.repositoryUrl))}" target="_blank" rel="noopener noreferrer">查看仓库</a></div>`).join('') : '<div class="dsh-empty">尚未提交项目补录。</div>'}</div>`;
   wireAccountNav();
   document.getElementById('pluginSubmissionForm')?.addEventListener('submit', async event => {
     event.preventDefault(); const data = new FormData(event.currentTarget); const message = document.getElementById('pluginSubmissionMessage');

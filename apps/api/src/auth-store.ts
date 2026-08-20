@@ -9,7 +9,7 @@ const scrypt = promisify(scryptCallback)
 export type UserRole = 'user' | 'admin'
 export type UserStatus = 'active' | 'disabled'
 export type ModerationStatus = 'approved' | 'pending' | 'hidden' | 'rejected'
-export type PluginVerificationStatus = 'verified_bundle'
+export type PluginVerificationStatus = 'verified_bundle' | 'verified_local_bundle' | 'verified_preset' | 'verified_suite'
 export type SyncRunStatus = 'queued' | 'discovering' | 'verifying' | 'completed' | 'partially_failed' | 'failed'
 export type CollectionVisibility = 'private' | 'public'
 export type CollectionModerationStatus = 'visible' | 'hidden'
@@ -175,9 +175,19 @@ export interface GitHubPluginRecord {
   version?: string
   releaseNotes?: CollectedReleaseNotes
   previewUrls?: string[]
-  source: 'github-topic'
+  components?: PluginComponent[]
+  source: 'github-topic' | 'github-discovery' | 'github-submission'
   securityReviewed: false
   verification: PluginVerification
+}
+
+export interface PluginComponent {
+  path: string
+  repository: string
+  url: string
+  role: 'bundle' | 'preset' | 'extension' | 'component'
+  pluginId?: string
+  verificationStatus?: PluginVerificationStatus
 }
 
 export interface PluginMediaView {
@@ -333,6 +343,8 @@ type SqlRow = Record<string, unknown>
 const nowIso = () => new Date().toISOString()
 const tokenHash = (token: string) => createHash('sha256').update(token).digest('hex')
 const revisionIdFor = (plugin: GitHubPluginRecord) => `${plugin.id}@${plugin.verification.commitSha}:${plugin.verification.packageJsonPath}`
+const verifiedArtifactStatuses = new Set<PluginVerificationStatus>(['verified_bundle', 'verified_local_bundle', 'verified_preset', 'verified_suite'])
+const verifiedArtifact = (plugin: GitHubPluginRecord) => verifiedArtifactStatuses.has(plugin.verification.status)
 
 async function passwordHash(password: string): Promise<string> {
   const salt = randomBytes(16).toString('hex')
@@ -700,7 +712,7 @@ export class AccountStore {
         )
       }
       for (const plugin of legacy.githubPlugins ?? []) {
-        if (plugin.verification?.status !== 'verified_bundle') continue
+        if (!verifiedArtifact(plugin)) continue
         this.ingestOne('legacy-import', plugin, legacy.pluginModeration?.[plugin.id])
       }
       for (const user of legacy.users ?? []) {
@@ -735,7 +747,7 @@ export class AccountStore {
         id,actor_id,status,discovered,verified,rejected,failed,created_at,started_at,finished_at
       ) VALUES(?,?,?,?,?,?,?,?,?,?)`).run(
         'sync_legacy_import', 'legacy-import', 'completed', (legacy.githubPlugins ?? []).length,
-        (legacy.githubPlugins ?? []).filter(plugin => plugin.verification?.status === 'verified_bundle').length,
+        (legacy.githubPlugins ?? []).filter(verifiedArtifact).length,
         0, 0, legacy.githubSyncedAt, legacy.githubSyncedAt, legacy.githubSyncedAt,
       )
     })
@@ -1634,6 +1646,11 @@ export class AccountStore {
     return (this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id WHERE s.user_id=? ORDER BY s.updated_at DESC`).all(userId) as SqlRow[]).map(row=>this.submissionFromRow(row))
   }
 
+  pluginSubmission(id: string): PluginSubmission | undefined {
+    const row = this.database.prepare(`SELECT s.*,u.username FROM plugin_submissions s JOIN users u ON u.id=s.user_id WHERE s.id=?`).get(id) as SqlRow | undefined
+    return row === undefined ? undefined : this.submissionFromRow(row)
+  }
+
   adminPluginSubmissions(query: { status?: string; page?: number; pageSize?: number } = {}) {
     const page=Math.max(1,query.page??1); const pageSize=Math.min(100,Math.max(1,query.pageSize??25)); const params:string[]=[]
     const where=query.status?'WHERE s.status=?':''; if(query.status) params.push(query.status)
@@ -1801,7 +1818,7 @@ export class AccountStore {
   }
 
   async ingestVerifiedPlugins(actorId: string, plugins: GitHubPluginRecord[]): Promise<void> {
-    this.transaction(() => plugins.filter(plugin => plugin.verification.status === 'verified_bundle').forEach(plugin => this.ingestOne(actorId, plugin)))
+    this.transaction(() => plugins.filter(verifiedArtifact).forEach(plugin => this.ingestOne(actorId, plugin)))
   }
 
   // Backward-compatible entry point used by existing deployment scripts.

@@ -2,7 +2,7 @@ import { posix as path } from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import type { CollectedReleaseNotes, GitHubPluginRecord, PluginVerification, RevisionChangeItem, SyncCandidateInput } from './auth-store.js'
 
-interface GitHubRepository {
+export interface GitHubRepository {
   name?: unknown; full_name?: unknown; description?: unknown; html_url?: unknown; homepage?: unknown
   stargazers_count?: unknown; forks_count?: unknown; language?: unknown; license?: { spdx_id?: unknown } | null
   updated_at?: unknown; pushed_at?: unknown; topics?: unknown; archived?: unknown; fork?: unknown
@@ -53,7 +53,15 @@ export interface GitHubSyncOptions {
   maxRepositories?: number
 }
 
-export const VERIFIER_VERSION = '2.1.0'
+export const VERIFIER_VERSION = '2.2.0'
+
+const discoveryQueries = [
+  'topic:dsh-plugin archived:false fork:false',
+  'topic:deepseek-harness archived:false fork:false',
+  'topic:dsh-bundle archived:false fork:false',
+  '"deepseek harness" in:name,description archived:false fork:false',
+  'dsh- in:name archived:false fork:false',
+]
 
 const headers = (token?: string) => ({
   Accept: 'application/vnd.github+json', 'User-Agent': 'DSH-Creative-Workshop/0.2', 'X-GitHub-Api-Version': '2022-11-28',
@@ -92,11 +100,14 @@ async function coreRateLimit(token: string | undefined, fetcher: Fetcher) {
 }
 
 function validCandidate(repository: GitHubRepository): boolean {
-  const topics = Array.isArray(repository.topics) ? repository.topics : []
-  return repository.archived !== true && repository.fork !== true && topics.includes('dsh-plugin') &&
+  return repository.archived !== true && repository.fork !== true &&
     repository.full_name !== 'deepseek-ai/deepseek-harness' && typeof repository.full_name === 'string' &&
-    typeof repository.description === 'string' && repository.description.trim().length >= 12 &&
     typeof repository.html_url === 'string' && typeof repository.pushed_at === 'string' && typeof repository.default_branch === 'string'
+}
+
+function repositoryDescription(repository: GitHubRepository): string {
+  if (typeof repository.description === 'string' && repository.description.trim().length >= 12) return repository.description.trim().slice(0, 800)
+  return `DeepSeek Harness community artifact from ${String(repository.full_name)}.`
 }
 
 function isDshDependency(name: string): boolean {
@@ -262,6 +273,24 @@ function pluginId(fullName: string, packageJsonPath: string): string {
   return `github.${base}`
 }
 
+function artifactId(fullName: string, type: 'preset' | 'suite'): string {
+  return `github.${`${fullName}.${type}`.toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/\.+$/, '')}`
+}
+
+function submoduleComponents(text: string) {
+  const components: Array<{ path: string; repository: string; url: string; role: 'bundle' | 'preset' | 'extension' | 'component' }> = []
+  for (const block of text.split(/(?=\[submodule\s+)/i)) {
+    const componentPath = /^\[submodule\s+"[^"]+"\][\s\S]*?^\s*path\s*=\s*(.+)$/im.exec(block)?.[1]?.trim().replaceAll('\\', '/')
+    const rawUrl = /^\[submodule\s+"[^"]+"\][\s\S]*?^\s*url\s*=\s*(.+)$/im.exec(block)?.[1]?.trim()
+    const repository = rawUrl?.match(/^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?$/i)?.[1]
+    if (componentPath === undefined || repository === undefined || componentPath.startsWith('../')) continue
+    const label = `${componentPath} ${repository}`.toLowerCase()
+    const role = /preset|router-standard/.test(label) ? 'preset' : /injector|bundle/.test(label) ? 'bundle' : /boost|extension|addon/.test(label) ? 'extension' : 'component'
+    components.push({ path: componentPath, repository, url: `https://github.com/${repository}`, role })
+  }
+  return components.slice(0, 12)
+}
+
 function kindFor(manifest: PackageManifest, patchText: string): string {
   if (manifest.dsh?.client?.platform === 'web') return 'web-ui'
   if (/\btui\b|terminal/i.test(patchText)) return 'tui'
@@ -284,24 +313,26 @@ export async function discoverGitHubTopic(token?: string, fetcher: Fetcher = fet
   const resultSets: GitHubRepository[][] = []
   let totalCount = 0
   let latestRateLimit: { remaining?: number; resetAt?: string } = {}
-  for (const sort of ['updated', 'stars']) {
-    const url = new URL('https://api.github.com/search/repositories')
-    url.searchParams.set('q', 'topic:dsh-plugin archived:false fork:false')
-    url.searchParams.set('sort', sort); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100')
-    const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
-    if (!response.ok) {
-      if (resultSets.length === 0) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
-      continue
+  for (const query of discoveryQueries) {
+    for (const sort of ['updated', 'stars']) {
+      const url = new URL('https://api.github.com/search/repositories')
+      url.searchParams.set('q', query)
+      url.searchParams.set('sort', sort); url.searchParams.set('order', 'desc'); url.searchParams.set('per_page', '100')
+      const response = await fetcher(url, { headers: headers(token), signal: AbortSignal.timeout(30_000) })
+      if (!response.ok) {
+        if (resultSets.length === 0) throw new Error(`GITHUB_DISCOVERY_FAILED_${response.status}`)
+        continue
+      }
+      const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
+      resultSets.push((body.items ?? []).filter(validCandidate))
+      totalCount = Math.max(totalCount, Number(body.total_count ?? 0))
+      latestRateLimit = rateLimit(response)
     }
-    const body = await response.json() as { items?: GitHubRepository[]; total_count?: number }
-    resultSets.push((body.items ?? []).filter(validCandidate))
-    totalCount = Math.max(totalCount, Number(body.total_count ?? 0))
-    latestRateLimit = rateLimit(response)
   }
   const repositories: GitHubRepository[] = []
   const seen = new Set<string>()
   const longest = Math.max(0, ...resultSets.map(items => items.length))
-  for (let index = 0; index < longest && repositories.length < 120; index += 1) {
+  for (let index = 0; index < longest && repositories.length < 300; index += 1) {
     for (const items of resultSets) {
       const repository = items[index]
       if (repository === undefined || typeof repository.full_name !== 'string' || seen.has(repository.full_name.toLowerCase())) continue
@@ -310,6 +341,15 @@ export async function discoverGitHubTopic(token?: string, fetcher: Fetcher = fet
     }
   }
   return { repositories, totalCount, rateLimit: latestRateLimit }
+}
+
+export async function fetchGitHubRepository(repositoryName: string, token?: string, fetcher: Fetcher = fetch): Promise<GitHubRepository | undefined> {
+  const normalized = repositoryName.trim().replace(/^https:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '')
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized)) return undefined
+  const response = await fetcher(`https://api.github.com/repos/${normalized}`, { headers: headers(token), signal: AbortSignal.timeout(20_000) })
+  if (!response.ok) return undefined
+  const repository = await response.json() as GitHubRepository
+  return validCandidate(repository) ? repository : undefined
 }
 
 export async function verifyGitHubRepositoryDetailed(repository: GitHubRepository, token?: string, fetcher: Fetcher = fetch): Promise<RepositoryVerificationResult> {
@@ -360,7 +400,6 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     if (manifestText === undefined) { failures.push({ packageJsonPath, reason: 'MANIFEST_FETCH_FAILED' }); continue }
     let manifest: PackageManifest
     try { manifest = JSON.parse(manifestText) as PackageManifest } catch { failures.push({ packageJsonPath, reason: 'MANIFEST_JSON_INVALID' }); continue }
-    if (manifest.private === true) { failures.push({ packageJsonPath, reason: 'PRIVATE_PACKAGE_EXCLUDED' }); continue }
     if (manifest.dsh?.bundle === undefined) continue
     if (typeof manifest.name !== 'string' || manifest.name.trim() === '') { failures.push({ packageJsonPath, reason: 'PACKAGE_NAME_MISSING' }); continue }
     const patchPath = safeBundlePatch(packageJsonPath, manifest.dsh.bundle.patch)
@@ -375,7 +414,8 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
     if (evidence === undefined) { failures.push({ packageJsonPath, reason: 'CORDIS_ENTRIES_MISSING' }); continue }
     const dependencies = dependenciesFor(manifest)
     const dshDependencies = [...dependencies].filter(isDshDependency)
-    const kind = kindFor(manifest, patchText)
+    const localBundle = manifest.private === true
+    const kind = localBundle ? 'local-bundle' : kindFor(manifest, patchText)
     const checkedAt = new Date().toISOString()
     const version = typeof manifest.version === 'string' && manifest.version.trim() !== '' ? manifest.version.trim().slice(0, 80) : undefined
     let releaseNotes = declaredNotes(manifest.dsh?.workshop?.releaseNotes, version, `${manifest.name} 更新`, checkedAt)
@@ -411,7 +451,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       }
     }
     const verification: PluginVerification = {
-      status: 'verified_bundle', commitSha: commit.sha, packageJsonPath, patchPath, checkedAt,
+      status: localBundle ? 'verified_local_bundle' : 'verified_bundle', commitSha: commit.sha, packageJsonPath, patchPath, checkedAt,
       verifierVersion: VERIFIER_VERSION, entryIds: evidence.entryIds, moduleSpecifiers: evidence.moduleSpecifiers,
     }
     if (dshDependencies.length === 0) {
@@ -423,7 +463,7 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       id: pluginId(fullName, packageJsonPath), fullName, name: manifest.name, packageName: manifest.name,
       packagePath: path.dirname(packageJsonPath) === '.' ? '.' : path.dirname(packageJsonPath),
       author: typeof repository.owner?.login === 'string' ? repository.owner.login : fullName.split('/')[0]!,
-      description: repository.description as string, url: repository.html_url as string,
+      description: repositoryDescription(repository), url: repository.html_url as string,
       ...(typeof repository.homepage === 'string' && repository.homepage !== '' ? { homepage: repository.homepage } : {}),
       stars: typeof repository.stargazers_count === 'number' ? repository.stargazers_count : 0,
       forks: typeof repository.forks_count === 'number' ? repository.forks_count : 0,
@@ -435,8 +475,64 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
       kind, surfaces: surfacesFor(manifest, kind), declaredDependencies: [...dependencies].sort(), dshDependencies: dshDependencies.sort(),
       ...(version === undefined ? {} : { version }), ...(releaseNotes === undefined ? {} : { releaseNotes }),
       ...(previewUrls.length === 0 ? {} : { previewUrls }),
-      source: 'github-topic', securityReviewed: false, verification,
+      source: 'github-discovery', securityReviewed: false, verification,
     })
+  }
+
+  const artifactCheckedAt = new Date().toISOString()
+  const commitSummary = cleanText(commit.commit?.message, 800)
+  const gitmodulesPath = fileNames.get('.gitmodules')
+  if (gitmodulesPath !== undefined) {
+    const gitmodules = await cachedText(gitmodulesPath)
+    const components = gitmodules === undefined ? [] : submoduleComponents(gitmodules)
+    if (components.length >= 2) plugins.push({
+      id: artifactId(fullName, 'suite'), fullName,
+      name: typeof repository.name === 'string' ? repository.name : fullName.split('/')[1]!,
+      packageName: `suite:${fullName.toLowerCase()}`, packagePath: '.',
+      author: typeof repository.owner?.login === 'string' ? repository.owner.login : fullName.split('/')[0]!,
+      description: repositoryDescription(repository), url: repository.html_url as string,
+      ...(typeof repository.homepage === 'string' && repository.homepage !== '' ? { homepage: repository.homepage } : {}),
+      stars: typeof repository.stargazers_count === 'number' ? repository.stargazers_count : 0,
+      forks: typeof repository.forks_count === 'number' ? repository.forks_count : 0,
+      ...(typeof repository.language === 'string' ? { language: repository.language } : {}),
+      ...(typeof repository.license?.spdx_id === 'string' && repository.license.spdx_id !== 'NOASSERTION' ? { license: repository.license.spdx_id } : {}),
+      updatedAt: typeof repository.updated_at === 'string' ? repository.updated_at : repository.pushed_at as string,
+      pushedAt: repository.pushed_at as string,
+      topics: Array.isArray(repository.topics) ? repository.topics.filter((topic): topic is string => typeof topic === 'string') : [],
+      kind: 'suite', surfaces: ['web', 'headless'], declaredDependencies: components.map(component => component.repository), dshDependencies: [], components,
+      ...(commitSummary === undefined ? {} : { releaseNotes: { title: `${String(repository.name)} suite 更新`, summary: commitSummary, changes: [{ type: 'changed', text: commitSummary.split(/\n/)[0]!.slice(0, 400) }], breakingChanges: [], sourceType: 'commit' as const, sourceUrl: typeof commit.html_url === 'string' ? commit.html_url : `${repository.html_url}/commit/${commit.sha}`, collectedAt: artifactCheckedAt } }),
+      source: 'github-discovery', securityReviewed: false,
+      verification: { status: 'verified_suite', commitSha: commit.sha, packageJsonPath: gitmodulesPath, patchPath: gitmodulesPath, checkedAt: artifactCheckedAt, verifierVersion: VERIFIER_VERSION, entryIds: components.map(component => component.path), moduleSpecifiers: components.map(component => component.repository) },
+    })
+  }
+
+  const presetPaths = [...files.keys()].filter(file => path.basename(file).toLowerCase() === 'preset.yml')
+    .filter(file => fileNames.has(`${path.dirname(file)}/agent.cordis.yml`.replace(/^\.\//, '').toLowerCase()))
+  const rootManifestPath = fileNames.get('package.json')
+  if (presetPaths.length > 0 && rootManifestPath !== undefined && !plugins.some(plugin => plugin.verification.packageJsonPath === rootManifestPath)) {
+    const manifestText = await cachedText(rootManifestPath)
+    let manifest: PackageManifest | undefined
+    try { manifest = manifestText === undefined ? undefined : JSON.parse(manifestText) as PackageManifest } catch { manifest = undefined }
+    if (manifest !== undefined && typeof manifest.name === 'string' && /(?:deepseek[ -]?harness|\bdsh\b)/i.test(`${fullName} ${repository.description ?? ''} ${manifest.name}`)) {
+      const version = typeof manifest.version === 'string' && manifest.version.trim() !== '' ? manifest.version.trim().slice(0, 80) : undefined
+      plugins.push({
+        id: artifactId(fullName, 'preset'), fullName, name: manifest.name, packageName: manifest.name, packagePath: '.',
+        author: typeof repository.owner?.login === 'string' ? repository.owner.login : fullName.split('/')[0]!,
+        description: repositoryDescription(repository), url: repository.html_url as string,
+        stars: typeof repository.stargazers_count === 'number' ? repository.stargazers_count : 0,
+        forks: typeof repository.forks_count === 'number' ? repository.forks_count : 0,
+        ...(typeof repository.language === 'string' ? { language: repository.language } : {}),
+        ...(typeof repository.license?.spdx_id === 'string' && repository.license.spdx_id !== 'NOASSERTION' ? { license: repository.license.spdx_id } : {}),
+        updatedAt: typeof repository.updated_at === 'string' ? repository.updated_at : repository.pushed_at as string,
+        pushedAt: repository.pushed_at as string,
+        topics: Array.isArray(repository.topics) ? repository.topics.filter((topic): topic is string => typeof topic === 'string') : [],
+        kind: 'preset', surfaces: ['web', 'headless'], declaredDependencies: [], dshDependencies: [],
+        ...(version === undefined ? {} : { version }),
+        ...(commitSummary === undefined ? {} : { releaseNotes: { ...(version === undefined ? {} : { version }), title: `${manifest.name} ${version ?? '更新'}`, summary: commitSummary, changes: [{ type: 'changed', text: commitSummary.split(/\n/)[0]!.slice(0, 400) }], breakingChanges: [], sourceType: 'commit' as const, sourceUrl: typeof commit.html_url === 'string' ? commit.html_url : `${repository.html_url}/commit/${commit.sha}`, collectedAt: artifactCheckedAt } }),
+        source: 'github-discovery', securityReviewed: false,
+        verification: { status: 'verified_preset', commitSha: commit.sha, packageJsonPath: rootManifestPath, patchPath: presetPaths[0]!, checkedAt: artifactCheckedAt, verifierVersion: VERIFIER_VERSION, entryIds: presetPaths.map(file => path.basename(path.dirname(file))), moduleSpecifiers: [] },
+      })
+    }
   }
   const uniquePlugins = new Map<string, GitHubPluginRecord>()
   for (const plugin of plugins) {
@@ -454,6 +550,36 @@ export async function verifyGitHubRepositoryDetailed(repository: GitHubRepositor
 
 export async function verifyGitHubRepository(repository: GitHubRepository, token?: string, fetcher: Fetcher = fetch): Promise<GitHubPluginRecord | undefined> {
   return (await verifyGitHubRepositoryDetailed(repository, token, fetcher)).plugins[0]
+}
+
+export async function verifyExactGitHubRepositoryDetailed(repositoryName: string, token?: string, fetcher: Fetcher = fetch): Promise<RepositoryVerificationResult> {
+  const repository = await fetchGitHubRepository(repositoryName, token, fetcher)
+  if (repository === undefined) return { repository: repositoryName, plugins: [], status: 'failed', reason: 'REPOSITORY_FETCH_FAILED', evidence: {} }
+  const result = await verifyGitHubRepositoryDetailed(repository, token, fetcher)
+  if (result.status !== 'verified') return result
+  const suite = result.plugins.find(plugin => plugin.kind === 'suite')
+  if (suite === undefined || suite.components === undefined) return {
+    ...result, plugins: result.plugins.map(plugin => ({ ...plugin, source: 'github-submission' as const })),
+  }
+  const componentResults = await Promise.all(suite.components.slice(0, 8).map(async component => {
+    const componentRepository = await fetchGitHubRepository(component.repository, token, fetcher)
+    if (componentRepository === undefined) return { component, result: { repository: component.repository, plugins: [], status: 'failed' as const, reason: 'REPOSITORY_FETCH_FAILED', evidence: {} } }
+    return { component, result: await verifyGitHubRepositoryDetailed(componentRepository, token, fetcher) }
+  }))
+  const components = suite.components.map(component => {
+    const checked = componentResults.find(item => item.component.repository.toLowerCase() === component.repository.toLowerCase())?.result
+    const plugin = checked?.plugins[0]
+    return { ...component, ...(plugin === undefined ? {} : { pluginId: plugin.id, verificationStatus: plugin.verification.status }) }
+  })
+  const plugins = [
+    ...result.plugins.map(plugin => plugin.id === suite.id ? { ...plugin, components, source: 'github-submission' as const } : { ...plugin, source: 'github-submission' as const }),
+    ...componentResults.flatMap(item => item.result.plugins.map(plugin => ({ ...plugin, source: 'github-submission' as const }))),
+  ]
+  return {
+    ...result,
+    plugins: [...new Map(plugins.map(plugin => [plugin.id, plugin])).values()],
+    evidence: { ...result.evidence, components: componentResults.map(item => ({ repository: item.component.repository, status: item.result.status, reason: item.result.reason, artifactCount: item.result.plugins.length })) },
+  }
 }
 
 export async function collectGitHubReleaseNotes(plugin: GitHubPluginRecord, token?: string, fetcher: Fetcher = fetch): Promise<CollectedReleaseNotes> {
@@ -522,12 +648,12 @@ export async function fetchGitHubTopicDetailed(
   options: GitHubSyncOptions = {},
 ): Promise<GitHubSyncResult> {
   onProgress?.({ phase: 'discovering', discovered: 0, processed: 0 })
-  const discovery = await discoverGitHubTopic(token, fetcher)
-  const repositoryByName = new Map(discovery.repositories.flatMap(repository => typeof repository.full_name === 'string' ? [[repository.full_name.toLowerCase(), repository] as const] : []))
   const requested = options.repositories?.map(repository => repository.toLowerCase())
-  const eligible = requested === undefined
-    ? discovery.repositories
-    : requested.flatMap(repository => repositoryByName.get(repository) ?? [])
+  const discovery = requested === undefined
+    ? await discoverGitHubTopic(token, fetcher)
+    : { repositories: (await Promise.all(requested.map(repository => fetchGitHubRepository(repository, token, fetcher)))).filter((repository): repository is GitHubRepository => repository !== undefined), totalCount: requested.length, rateLimit: {} }
+  const repositoryByName = new Map(discovery.repositories.flatMap(repository => typeof repository.full_name === 'string' ? [[repository.full_name.toLowerCase(), repository] as const] : []))
+  const eligible = requested === undefined ? discovery.repositories : requested.flatMap(repository => repositoryByName.get(repository) ?? [])
   const missing = requested === undefined ? [] : requested.filter(repository => !repositoryByName.has(repository))
   const discovered = requested?.length ?? discovery.repositories.length
   const before = await coreRateLimit(token, fetcher)

@@ -1,0 +1,13 @@
+{
+  "version": "1.1.5",
+  "title": "扩展发现与组合型产物",
+  "summary": "GitHub 目录现已支持多来源发现、精确 URL 补录，并能分类验证 Bundle、本地 Bundle、Preset 与 Suite。",
+  "publishedAt": "2026-08-20T06:45:00.000Z",
+  "changes": [
+    { "type": "added", "text": "新增 DSH Topic、仓库名称和描述的多来源 GitHub 发现与去重。" },
+    { "type": "added", "text": "新增本地 Bundle、成对 Preset 和 Git submodule Suite 的结构验证。" },
+    { "type": "fixed", "text": "用户精确补录的仓库不再因未设置 dsh-plugin Topic 而漏收。" },
+    { "type": "changed", "text": "管理员接收补录时立即执行精确验证，通过的产物进入待审队列。" },
+    { "type": "security", "text": "扩展发现不绕过固定 Commit、结构验证和人工发布审核。" }
+  ]
+}

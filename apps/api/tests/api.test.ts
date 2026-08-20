@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApi } from '../src/app.ts'
 import { AccountStore, type GitHubPluginRecord } from '../src/auth-store.ts'
+import type { Fetcher } from '../src/github-catalog.ts'
 
 const origin = 'https://workshop.example'
 const plugin = (id = 'github.community.bundle', sha = 'commit-one'): GitHubPluginRecord => ({
@@ -13,6 +14,24 @@ const plugin = (id = 'github.community.bundle', sha = 'commit-one'): GitHubPlugi
   kind: 'bundle', surfaces: ['web', 'headless'], source: 'github-topic', securityReviewed: false,
   verification: { status: 'verified_bundle', commitSha: sha, packageJsonPath: 'package.json', patchPath: 'cordis.patch.yml', checkedAt: '2026-08-14T00:00:00Z', verifierVersion: '2.0.0', entryIds: ['bundle'], moduleSpecifiers: ['@community/bundle'] },
 })
+
+const submissionFetcher: Fetcher = async input => {
+  const url = String(input)
+  if (url === 'https://api.github.com/repos/community/new-dsh-plugin') return new Response(JSON.stringify({
+    name: 'new-dsh-plugin', full_name: 'community/new-dsh-plugin', description: 'A directly submitted DeepSeek Harness local bundle.',
+    html_url: 'https://github.com/community/new-dsh-plugin', stargazers_count: 2, forks_count: 0, language: 'TypeScript',
+    updated_at: '2026-08-16T00:00:00Z', pushed_at: '2026-08-16T00:00:00Z', topics: [], archived: false, fork: false,
+    default_branch: 'main', owner: { login: 'community' },
+  }), { status: 200 })
+  if (url.includes('/commits/main')) return new Response(JSON.stringify({ sha: 'submitted-fixed-commit', commit: { message: 'Add submitted bundle.' } }), { status: 200 })
+  if (url.includes('/git/trees/submitted-fixed-commit')) return new Response(JSON.stringify({ truncated: false, tree: [
+    { path: 'package.json', type: 'blob', size: 200 }, { path: 'cordis.patch.yml', type: 'blob', size: 80 },
+  ] }), { status: 200 })
+  if (url.endsWith('/package.json')) return new Response(JSON.stringify({ name: '@community/new-dsh-plugin', private: true, peerDependencies: { cordis: '*' }, dsh: { bundle: { patch: './cordis.patch.yml' } } }), { status: 200 })
+  if (url.endsWith('/cordis.patch.yml')) return new Response('- insert:\n    - id: submitted\n      name: "@community/new-dsh-plugin"\n', { status: 200 })
+  if (url.includes('/releases?')) return new Response('[]', { status: 200 })
+  return new Response('{}', { status: 404 })
+}
 
 describe('marketplace account and administration API', () => {
   let app: FastifyInstance
@@ -29,6 +48,7 @@ describe('marketplace account and administration API', () => {
       accountStore: accounts,
       allowedOrigins: [origin],
       bootstrapAdmin: { username: 'admin', email: 'admin@example.test', password: 'AdminPassword12345' },
+      githubFetcher: submissionFetcher,
       mediaFetcher: (async () => new Response(new Uint8Array([137, 80, 78, 71]), { status: 200, headers: { 'Content-Type': 'image/png' } })) as typeof fetch,
     })
     const login = await app.inject({ method: 'POST', url: '/v1/auth/login', headers: { origin }, payload: { identity: 'admin', password: 'AdminPassword12345' } })
@@ -42,7 +62,7 @@ describe('marketplace account and administration API', () => {
     const ready = await app.inject({ method: 'GET', url: '/health/ready' })
     expect(live.statusCode).toBe(200)
     expect(live.headers['x-request-id']).toBe('test-request-id')
-    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.4', storage: 'sqlite-wal', catalog: 1 })
+    expect(ready.json()).toMatchObject({ ok: true, version: '1.1.5', storage: 'sqlite-wal', catalog: 1 })
   })
 
   it('only returns approved verified revisions from the public catalog', async () => {
@@ -90,6 +110,8 @@ describe('marketplace account and administration API', () => {
     expect((await app.inject({ method: 'GET', url: '/v1/me/plugin-submissions', headers: { cookie: userCookie } })).json().items[0].id).toBe(submissionId)
     const accepted = await app.inject({ method: 'PATCH', url: `/v1/admin/plugin-submissions/${submissionId}`, headers: { cookie: adminCookie, origin }, payload: { status: 'accepted' } })
     expect(accepted.json().submission.status).toBe('accepted')
+    expect(accepted.json().verification.artifacts[0]).toMatchObject({ kind: 'local-bundle', verificationStatus: 'verified_local_bundle' })
+    expect(accounts.githubSnapshot(true, { q: 'new-dsh-plugin' }).items[0]).toMatchObject({ moderation: { status: 'pending' }, source: 'github-submission' })
 
     const reported = await app.inject({ method: 'POST', url: `/v1/plugins/${encodeURIComponent(published.id)}/media/report`, headers: { cookie: userCookie, origin }, payload: { reason: 'The project preview is cropped incorrectly.' } })
     expect(reported.statusCode).toBe(201)
@@ -106,9 +128,9 @@ describe('marketplace account and administration API', () => {
     const revisions = await app.inject({ method: 'GET', url: `/v1/plugins/${encodeURIComponent(published.id)}/revisions` })
     const platformActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=platform' })
     const pluginActivity = await app.inject({ method: 'GET', url: '/v1/activity?category=plugin' })
-    expect(releases.json().items[0]).toMatchObject({ version: '1.1.4', title: expect.any(String), changes: expect.any(Array) })
+    expect(releases.json().items[0]).toMatchObject({ version: '1.1.5', title: expect.any(String), changes: expect.any(Array) })
     expect(revisions.json().items[0]).toMatchObject({ revisionId: expect.any(String), release: { sourceType: 'missing', summary: '作者未提供更新日志。' } })
-    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.4', changes: expect.any(Array) } })
+    expect(platformActivity.json().items[0]).toMatchObject({ type: 'workshop.release.published', payload: { version: '1.1.5', changes: expect.any(Array) } })
     expect(pluginActivity.json().items[0]).toMatchObject({ type: 'plugin.published', payload: { release: { sourceType: 'missing' } } })
   })
 

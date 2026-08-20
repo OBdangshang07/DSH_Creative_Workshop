@@ -70,6 +70,7 @@ describe('asynchronous catalog synchronization', () => {
     const fetcher: Fetcher = async input => {
       const url = String(input)
       if (url.includes('/search/repositories')) return response({ total_count: 2, items: [repository('valid-a'), repository('valid-b')] }, 200, true)
+      if (url === 'https://api.github.com/repos/community/valid-b') return response(repository('valid-b'))
       if (url.endsWith('/rate_limit')) return response({ resources: { core: { remaining: 8, reset: 1_786_665_600 } } })
       if (url.includes('/commits/')) return response({ sha: url.includes('valid-b') ? 'valid-b-sha' : 'valid-a-sha' })
       if (url.includes('/git/trees/')) return response({ truncated: false, tree: [{ path: 'package.json', type: 'blob', size: 150 }, { path: 'patch.yml', type: 'blob', size: 80 }] })

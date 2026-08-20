@@ -2,6 +2,25 @@
 
 All notable changes to DSH Creative Workshop are recorded here.
 
+## [1.1.5] - 2026-08-20
+
+### Added
+
+- Multi-source GitHub discovery across DSH topics, repository names and descriptions, with deterministic deduplication.
+- Exact GitHub repository verification when an administrator accepts a user submission; accepted artifacts enter the normal pending-review queue.
+- Explicit artifact models for installable local Bundles, paired Presets and Git-submodule Suites, including visible component relationships.
+
+### Changed
+
+- A missing `dsh-plugin` Topic no longer rejects an otherwise valid DeepSeek Harness artifact.
+- Synchronization can fetch retry or continuation repositories directly instead of requiring them to reappear in the current search result window.
+- Administration filters and public verification notices now distinguish Bundle, local Bundle, Preset and Suite entries.
+
+### Security
+
+- Expanded discovery does not weaken publication controls: every artifact is pinned to a commit, structurally verified, ingested as pending and requires administrator approval before publication.
+- Suite components are independently verified; non-installable components remain visible as relationships without being presented as standalone plugins.
+
 ## [1.1.4] - 2026-08-15
 
 ### Added

@@ -97,7 +97,7 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
     ])
   })
 
-  it('excludes private and template packages and deduplicates package names', async () => {
+  it('accepts installable private local Bundles, excludes templates and deduplicates package names', async () => {
     const result = await verifyGitHubRepositoryDetailed(repository, undefined, fixtureFetch({
       'packages/real/package.json': JSON.stringify({ name: '@community/shared', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
       'packages/real/patch.yml': '- insert:\n    - id: real\n      name: "@community/shared"\n',
@@ -108,10 +108,10 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
       'templates/starter/package.json': JSON.stringify({ name: '@community/template', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
       'templates/starter/patch.yml': '- insert:\n    - id: template\n      name: "@community/template"\n',
     }))
-    expect(result.plugins).toHaveLength(1)
-    expect(result.plugins[0]?.verification.packageJsonPath).toBe('packages/real/package.json')
+    expect(result.plugins).toHaveLength(2)
+    expect(result.plugins.find(plugin => plugin.verification.packageJsonPath === 'packages/private/package.json')).toMatchObject({ kind: 'local-bundle', verification: { status: 'verified_local_bundle' } })
+    expect(result.plugins.find(plugin => plugin.verification.packageJsonPath === 'packages/real/package.json')).toMatchObject({ kind: 'bundle' })
     expect(result.evidence.failures).toEqual(expect.arrayContaining([
-      expect.objectContaining({ packageJsonPath: 'packages/private/package.json', reason: 'PRIVATE_PACKAGE_EXCLUDED' }),
       expect.objectContaining({ packageJsonPath: 'packages/real/generated/copy/package.json', reason: 'DUPLICATE_PACKAGE_NAME' }),
     ]))
   })
@@ -125,12 +125,40 @@ describe('DeepSeek Harness GitHub bundle verification', () => {
     expect(result.reason).toBe('DSH_DEPENDENCY_EVIDENCE_WEAK')
   })
 
-  it('rejects upstream, forks, archives and repositories without the topic', async () => {
+  it('rejects upstream, forks and archives while allowing strict verification without a topic', async () => {
     const variants = [
       { ...repository, full_name: 'deepseek-ai/deepseek-harness' }, { ...repository, fork: true },
-      { ...repository, archived: true }, { ...repository, topics: [] },
+      { ...repository, archived: true },
     ]
     for (const candidate of variants) expect(await verifyGitHubRepository(candidate, undefined, fixtureFetch({}))).toBeUndefined()
+    const withoutTopic = await verifyGitHubRepository({ ...repository, topics: [] }, undefined, fixtureFetch({
+      'package.json': JSON.stringify({ name: '@community/direct', dependencies: { cordis: '*' }, dsh: { bundle: { patch: './patch.yml' } } }),
+      'patch.yml': '- insert:\n    - id: direct\n      name: "@community/direct"\n',
+    }))
+    expect(withoutTopic).toMatchObject({ name: '@community/direct', kind: 'bundle' })
+  })
+
+  it('classifies Git submodule aggregators as suites', async () => {
+    const result = await verifyGitHubRepositoryDetailed({ ...repository, full_name: 'community/routing-suite', name: 'routing-suite', topics: [] }, undefined, fixtureFetch({
+      '.gitmodules': '[submodule "injector"]\n  path = injector\n  url = https://github.com/community/injector.git\n[submodule "preset"]\n  path = preset\n  url = https://github.com/community/router-preset.git\n[submodule "boost"]\n  path = mode-boost\n  url = https://github.com/community/mode-boost.git\n',
+      'README.md': '# DeepSeek Harness routing suite',
+    }))
+    expect(result.status).toBe('verified')
+    expect(result.plugins[0]).toMatchObject({ kind: 'suite', verification: { status: 'verified_suite' }, components: [
+      expect.objectContaining({ path: 'injector', role: 'bundle' }),
+      expect.objectContaining({ path: 'preset', role: 'preset' }),
+      expect.objectContaining({ path: 'mode-boost', role: 'extension' }),
+    ] })
+  })
+
+  it('classifies paired DSH preset manifests without pretending they are Bundles', async () => {
+    const result = await verifyGitHubRepositoryDetailed({ ...repository, full_name: 'community/dsh-router-standard', topics: [] }, undefined, fixtureFetch({
+      'package.json': JSON.stringify({ name: 'dsh-router-standard', version: '0.3.0' }),
+      'preset/router-standard/preset.yml': 'name: router-standard',
+      'preset/router-standard/agent.cordis.yml': 'name: router-standard-agent',
+    }))
+    expect(result.status).toBe('verified')
+    expect(result.plugins[0]).toMatchObject({ kind: 'preset', version: '0.3.0', verification: { status: 'verified_preset', patchPath: 'preset/router-standard/preset.yml' } })
   })
 
   it('does not scan fixture, example or node_modules manifests', async () => {

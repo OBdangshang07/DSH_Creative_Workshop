@@ -1,10 +1,10 @@
-# 当前 v1.1.4 实现
+# 当前 v1.1.5 实现
 
 ## 1. 范围
 
 本实现把规划中的高价值闭环落成一个模块化 TypeScript monorepo：用户可从浏览器发现和比较插件，查看标准化权限、证据、评价与关系，选择精确版本，并向本机 Companion 请求一个可审阅的安装计划。当前操作执行到可审计的 dry-run 回执为止，不修改真实 DSH profile。
 
-生产目录通过 GitHub `dsh-plugin` Topic 发现候选，但 Topic 本身不构成收录资格。API 固定仓库 commit，扫描 monorepo 中的 `package.json`，验证 `dsh.bundle.patch`、Cordis entry 结构和 DSH/Cordis 依赖证据；新 revision 必须经管理员人工审核后才能公开。结构验证仍不代表官方认证或安全审计。
+生产目录通过 `dsh-plugin`、`deepseek-harness`、`dsh-bundle` Topic 与仓库名称/描述检索发现候选，并支持用户提交精确 GitHub URL。API 固定仓库 commit，分类验证标准 `dsh.bundle.patch` Bundle、可安装的本地 Bundle、成对 Preset 和 Git submodule Suite；新 revision 仍必须经管理员人工审核后才能公开。结构验证不代表官方认证或安全审计。
 
 ## 2. 代码结构
 
